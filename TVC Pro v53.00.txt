@@ -1,0 +1,1734 @@
+//@version=6
+// Total Lines: 1636
+
+// Modules: 
+// 1. НАСТРОЙКИ,
+// 2. ИНИЦИАЛИЗАЦИЯ И ГЛОБАЛЬНЫЙ SCOPE, 
+// 3. МАТЕМАТИЧЕСКАЯ ЛОГИКА TVC,
+// 3.1 MTF REGIME ALIGNMENT,
+// 4. ИНФОРМАЦИОННАЯ ЭНТРОПИЯ,
+// 4.1 АЛГОРИТМ KSSA,
+// 4.2 Фрактальное дифференцирование,
+// 5. Hilbert Transform,
+// 6. Z-SCORE СИГНАЛЫ И ЗАЩИТА ОТ ПОЗДНИХ ВХОДОВ,
+// 7. KALMAN FILTER,
+// 8. HYBRID ENGINE: 3D EMISSION M-HMM & FRACDIFF,
+// 9. ONLINE LOGISTIC REGRESSION,
+// 9.5 DYNAMIC KELLY CRITERION,
+// 10. ОТРИСОВКА И ДАШБОРД
+
+indicator("Trend Velocity Core [TVC] Quant (v51.01)", shorttitle="TVC Pro v51.01 (KSSA+HMM+RLS)", overlay = true)
+
+// =========================================================================
+// 1. НАСТРОЙКИ
+// =========================================================================
+grp_tvc = "Настройки TVC Core"
+src_type   = input.string("Close", "Источник", options = ["Close", "HLC3", "Heikin Ashi"], group = grp_tvc)
+reg_mode   = input.string("Logarithmic", "Шкала", options = ["Linear", "Logarithmic"], group = grp_tvc)
+k_type     = input.string("Tricube", "Ядро TVC-1", options = ["Gaussian", "Epanechnikov", "Triangular", "Tricube"], group = grp_tvc)
+h_max      = input.int(9, "Макс. Окно (h_max)", minval = 2, group = grp_tvc)
+
+grp_stats = "Визуализация"
+show_line  = input.bool(true, "Линия TVC (Fast)", group = grp_stats)
+line_w     = input.int(2, "Толщина", minval = 1, group = grp_stats)
+basecol_transparency = input.int(20, "Прозрачность для линии TVC", minval = 0, maxval = 100, group = grp_stats)
+show_bands = input.bool(false, "Prediction Bands (MAD Robust)", group = grp_stats)
+band_mult_user = input.float(2.0, "Множитель Bands", minval = 0.5, step = 0.5, group = grp_stats)
+up_col     = input.color(#00FF00, "Цвет роста", group = grp_stats)
+dn_col     = input.color(#FF0000, "Цвет падения", group = grp_stats)
+band_transparency = input.int(85, "Прозрачность для Bands", minval = 0, maxval = 100, group = grp_stats)
+show_kalman= input.bool(false, "Показывать сглаженную линию Kalman", group = grp_stats)
+show_kalman_exhaustion = input.bool(false, "Сигналы истощения по Калману (Волны)", group = grp_stats)
+show_dash  = input.bool(false, "Показывать информационную панель", group = grp_stats)
+
+grp_tvc2 = "Линия TVC-2 (Slow)"
+show_tvc2  = input.bool(true, "TVC-2 (Slow)", group = grp_tvc2)
+k_type2    = input.string("Gaussian", "Ядро TVC-2", options = ["Gaussian", "Epanechnikov", "Triangular", "Tricube"], group = grp_tvc2)
+h_max2     = input.int(30, "Макс. TVC-2 (h_max2)", minval = 2, group = grp_tvc2)
+line_w2    = input.int(2, "Толщина TVC-2", minval = 1, group = grp_tvc2)
+up_col2    = input.color(#00ff00, "Цвет роста TVC-2", group = grp_tvc2)
+dn_col2    = input.color(#ff0000, "Цвет падения TVC-2", group = grp_tvc2)
+basecol_transparency2 = input.int(50, "Прозрачность TVC-2", minval = 0, maxval = 100, group = grp_tvc2)
+
+grp_mas = "Стандартные Скользящие (MA)"
+show_ma_fast = input.bool(false, "Fast MA", group = grp_mas)
+type_ma_fast = input.string("EMA", "Тип Fast MA", options=["EMA", "SMA"], group = grp_mas)
+len_ma_fast  = input.int(21, "Период Fast", minval=1, group = grp_mas)
+col_ma_fast  = input.color(#2962ff, "Цвет Fast", group = grp_mas)
+
+show_ma_med  = input.bool(false, "Mean MA", group = grp_mas)
+type_ma_med  = input.string("EMA", "Тип Mean MA", options=["EMA", "SMA"], group = grp_mas)
+len_ma_med   = input.int(50, "Период Mean", minval=1, group = grp_mas)
+col_ma_med   = input.color(#ff9800, "Цвет Mean", group = grp_mas)
+
+show_ma_slow = input.bool(false, "Slow MA", group = grp_mas)
+type_ma_slow = input.string("SMA", "Тип Slow MA", options=["EMA", "SMA"], group = grp_mas)
+len_ma_slow  = input.int(100, "Период Slow", minval=1, group = grp_mas)
+col_ma_slow  = input.color(#f44336, "Цвет Slow", group = grp_mas)
+
+grp_adapt = "Адаптивность TVC (Fast & Slow)"
+use_adapt  = input.bool(false, "Адаптивное окно TVC", group = grp_adapt)
+adapt_type = input.string("Efficiency Ratio", "Метод адаптации", options = ["Efficiency Ratio", "Volatility (ATR)"], group = grp_adapt)
+h_min      = input.int(5, "Мин. Окно (h_min)", minval = 2, group = grp_adapt)
+er_len     = input.int(10, "Период анализа (ER/ATR)", minval = 1, group = grp_adapt)
+
+grp_mtf = "MTF Regime Alignment (Гравитация)"
+use_mtf = input.bool(false, "Включить MTF Фильтр", group = grp_mtf)
+mtf_res = input.timeframe("240", "Старший Таймфрейм", group = grp_mtf)
+
+grp_entropy = "Mutual Information (Взаимная Информация)"
+use_entropy = input.bool(true, "Включить Информационную Дивергенцию", group = grp_entropy)
+ent_len     = input.int(20, "Окно памяти (Lookback)", minval = 5, group = grp_entropy)
+ent_bins    = input.int(5, "Количество состояний (Static Bins)", minval = 2, maxval = 20, group = grp_entropy)
+use_dyn_ent = input.bool(true, "Динамический порог Дивергенции", group = grp_entropy)
+ent_perc    = input.int(90, "Перцентиль порога", minval=50, maxval=99, group = grp_entropy)
+ent_thresh  = input.float(0.9, "Статичный порог Дивергенции", minval=0.1, maxval=1.0, step=0.05, group = grp_entropy)
+
+grp_entropy_adv = "Продвинутые настройки Information Theory"
+ent_source = input.string("Raw Momentum", "Источник X (Цена)", options=["Raw Momentum", "Norm Momentum", "TVC Velocity"], group = grp_entropy_adv)
+use_adaptive_bins = input.bool(true, "Адаптивные корзины (Adaptive Bins)", group = grp_entropy_adv)
+use_miller_madow = input.bool(true, "Коррекция Миллера-Мэдоу (Bias)", group = grp_entropy_adv)
+ent_robust = input.bool(true, "Robust Binning (Защита от сквизов)", group = grp_entropy_adv)
+use_exhaustion = input.bool(true, "Включить Exhaustion Guard", group = grp_entropy_adv)
+exh_thresh_atr = input.float(2.5, "Порог истощения (в ATR)", minval=1.0, step=0.5, group = grp_entropy_adv)
+
+grp_ar_ssa = "4.1 АЛГОРИТМ AR-SSA (Zero-Lag Spectral + Forecast)"
+use_kssa = input.bool(true, "Использовать KSSA для разворотов", group = grp_ar_ssa)
+show_kssa_line = input.bool(true, "Показывать сглаженную линию KSSA", group = grp_ar_ssa)
+kssa_forecast_algo = input.string("SSA LRF", "Алгоритм прогнозирования (T+1)", options=["Burg AR", "SSA LRF"], group=grp_ar_ssa, tooltip="SSA LRF - внутренний прогноз по векторам. Burg AR - внешняя регрессия.")
+kssa_len = input.int(25, "Размер матрицы KSSA (Окно L)", minval=3, maxval=50, group = grp_ar_ssa) 
+kssa_rank_method = input.string("Shannon Entropy", "Критерий выбора ранга (r)", options=["Shannon Entropy", "Marchenko-Pastur", "Colored Noise MDL", "Fixed"], group=grp_ar_ssa, tooltip="Институциональный алгоритм отсечения спектрального шума.")
+kssa_comp = input.int(3, "Фиксированный ранг (если Fixed)", minval=1, maxval=20, group = grp_ar_ssa)
+kssa_use_toeplitz = input.bool(true, "Strict Biased Toeplitz Estimator", group=grp_ar_ssa, tooltip="Формирует стационарную автоковариацию, убирает краевой лаг.")
+kssa_use_prewhiten = input.bool(true, "Subspace Pre-whitening (Soft Shrinkage)", group=grp_ar_ssa, tooltip="Отбеливание спектра от фонового шума для повышения SNR.")
+kssa_use_huber = input.bool(true, "Huber-Weighted Covariance (Анти-Шип)", group=grp_ar_ssa, tooltip="Ограничивает влияние больших свечей на SVD через Huber Loss")
+kssa_use_fbssa = input.bool(true, "FB-SSA (Forward-Backward Averaging)", group=grp_ar_ssa, tooltip="Удваивает пространственную стабильность матрицы")
+kssa_bj_len = input.int(60, "Окно обучения (N)", minval=20, maxval=200, group=grp_ar_ssa)
+kssa_ar_order = input.int(8, "Порядок Burg AR / LRF (p)", minval=2, maxval=30, group=grp_ar_ssa)
+kssa_forecast = input.int(15, "Горизонт прогнозирования (Макс)", minval=1, maxval=30, group=grp_ar_ssa, tooltip="Встраивается в матрицу для устранения лага")
+kssa_use_mad = input.bool(true, "MAD Робастное центрирование (Анти-Сквиз)", group=grp_ar_ssa)
+kssa_ar_reg = input.float(1e-4, "L2 Регуляризация Бёрга (Ridge Alpha)", minval=0.0, step=1e-5, group=grp_ar_ssa)
+kssa_ar_tau = input.float(0.5, "Schur-Cohn Barrier (Tau)", minval=0.1, maxval=1.0, step=0.1, group=grp_ar_ssa, tooltip="Стабилизация корней Бёрга")
+kssa_use_mssa = input.bool(false, "Multivariate SSA (MSSA + Volume)", group=grp_ar_ssa, tooltip="Строит блочную матрицу для подавления ценового шума без объемов")
+kssa_vol_w = input.float(0.5, "Вес объема в MSSA", minval=0.1, step=0.1, group=grp_ar_ssa)
+kssa_use_fading = input.bool(true, "Dynamic Fading Memory (По Ляпунову)", group=grp_ar_ssa, tooltip="Динамическая память в зависимости от Efficiency Ratio")
+kssa_fading_max = input.float(0.99, "Макс. затухание (Rho Max)", minval=0.8, maxval=1.0, step=0.01, group=grp_ar_ssa)
+kssa_fading_min = input.float(0.85, "Мин. затухание (Rho Min)", minval=0.5, maxval=0.9, step=0.01, group=grp_ar_ssa)
+kssa_diag_weight = input.float(1.0, "WSP Focus (Zero-Lag Edge)", minval=0.1, maxval=5.0, step=0.1, group=grp_ar_ssa, tooltip="Степень применения окна Ханна-Натолла.")
+kssa_use_reortho = input.bool(true, "MGS Реортогонализация SVD (Anti-Lag)", group=grp_ar_ssa, tooltip="Модифицированный Грам-Шмидт: восстанавливает U_r^T*U_r=I после matrix.eigenvectors(). Устраняет искажение проектора при кратных собственных значениях (главный источник лага и шума).")
+kssa_unbias_toeplitz = input.bool(false, "PSD-Unbiased Toeplitz (Anti-Spectral-Decay)", group=grp_ar_ssa, tooltip="Компенсация систематического завала спектра автоковариации при экспоненциальном затухании, с сохранением PSD-гарантии матрицы.")
+kssa_strict_reflect = input.bool(true, "Strict Schur-Cohn Clamp (|k|<1-eps)", group=grp_ar_ssa, tooltip="Жёсткое отражение коэффициентов Бёрга внутрь единичного круга перед мягким барьером. Гарантирует устойчивость AR-полинома по теореме Шура-Кона.")
+kssa_vert_thresh = input.float(0.9999, "LRF Verticality Threshold (Anti-Loss)", minval=0.99, maxval=0.999999, step=0.0001, group=grp_ar_ssa, tooltip="Порог nu^2 для переключения LRF на проекционный recurrent forecast вместо обнуления (сохранение количества сигналов).")
+float kssa_sig_perc = input.float(45.0, "Перцентиль силы сигнала (KSSA)", minval=10.0, maxval=99.0, step=1.0, group=grp_ar_ssa)
+kssa_use_combo = input.bool(true, "Combo Reversal Engine (A+C: Early|Turn)", group=grp_ar_ssa, tooltip="Объединяет упреждающий разворот по кривизне (Zero-Lag, вариант C) и пересечение наклона с фильтром силы (вариант A). Откл. -> чистое пересечение наклона (старое поведение).")
+float kssa_curv_perc = input.float(60.0, "Перцентиль силы кривизны (Early)", minval=10.0, maxval=99.0, step=1.0, group=grp_ar_ssa, tooltip="Порог значимости для упреждающего разворота по кривизне (компонент C).")
+kssa_cooldown = input.int(4, "Cooldown между однотипными (бары)", minval=0, maxval=20, group=grp_ar_ssa, tooltip="Минимальный интервал между двумя сигналами одного направления. Подавляет дубли, повышает точность совпадения с эталоном.")
+kssa_col_bull = input.color(color.new(color.aqua, 0), "Цвет сигнала KSSA (Buy)", group = grp_ar_ssa)
+kssa_col_bear = input.color(color.new(color.orange, 0), "Цвет сигнала KSSA (Sell)", group = grp_ar_ssa)
+
+grp_quant = "Сигналы (Quant)"
+show_turning    = input.bool(false, "Trend Turning Points", group = grp_quant)
+show_accel      = input.bool(true, "Trend Acceleration (Ускорение TVC)", group = grp_quant) 
+accel_filter_mult= input.float(2.0, "Порог ускорения TVC (StDev)", minval=0.0, step=0.1, group = grp_quant) 
+show_zscore     = input.bool(true, "Z-Score Signals", group = grp_quant)
+z_persist       = input.int(2, "Z-Score Persistence (Бары)", minval=1, group = grp_quant)
+z_tol_window    = input.int(3, "Tolerance Window для Z-Score", minval=1, maxval=10, group = grp_quant)
+show_curv_flip  = input.bool(false, "Curvature Flip (Точка перегиба)", group = grp_quant)
+show_divergence = input.bool(false, "Multi-scale Divergence (HFT)", group = grp_quant)
+use_vol_filter  = input.bool(false, "Volatility Filter (Quant Signals)", group = grp_quant)
+risk_factor     = input.float(0.03, "Risk Factor (Позиция)", minval=0.01, step=0.01, group=grp_quant)
+use_kssa_boost  = input.bool(true, "KSSA Jerk Boost (Увеличение объема)", group = grp_quant) 
+kssa_boost_mult = input.float(1.5, "Множитель объема (KSSA Jerk)", minval=1.0, step=0.1, group = grp_quant) 
+
+grp_rls = "ONLINE LOGISTIC REGRESSION (META-SCORE)"
+show_soft_sigs  = input.bool(true, "Показывать сигналы Meta-Score", group = grp_rls)
+use_online_lr   = input.bool(true, "Обучение весов Logistic Regression", group = grp_rls)
+use_kalman_feat = input.bool(false, "Использовать скорость Калмана (k_v) в RLS (Строгий Фильтр)", group = grp_rls) 
+lr_rate         = input.float(0.05, "Learning Rate (Оптимизатор Ньютона)", minval=0.001, maxval=0.5, step=0.01, group = grp_rls) 
+lr_lambda       = input.float(0.001, "Ridge Penalty (Защита от переобучения)", minval=0.0, step=0.001, group = grp_rls)
+lr_sig_thresh   = input.float(0.7, "Порог активации сигнала (> 0.5)", minval=0.5, maxval=0.9, step=0.05, group = grp_rls) 
+
+grp_timing = "Защита от поздних входов (Late Entry Guards)"
+use_z_guard = input.bool(false, "Блокировка покупок на хаях/низах (Z-Guard)", group = grp_timing)
+max_z_entry = input.float(1.0, "Макс. Z-Score для входа", minval=0.1, step=0.1, group = grp_timing)
+use_freshness = input.bool(false, "Фильтр свежести тренда (Vol-Weighted Freshness)", group = grp_timing)
+max_bars_late = input.float(5.0, "Макс. взвешенных баров после разворота TVC", minval=1.0, step=1.0, group = grp_timing)
+
+grp_adv_quant = "Продвинутые Квантовые Модули"
+use_vw          = input.bool(false, "Volume-Weighted TVC (VW-TVC) и CVD Proxy", group = grp_adv_quant)
+use_hilbert     = input.bool(true, "Hilbert Transform (Phase Analysis)", group = grp_adv_quant)
+use_kalman_adapt= input.bool(true, "Адаптивный Kalman Filter (Innovation Check)", group = grp_adv_quant)
+
+grp_frac = "Фрактальное дифференцирование (FracDiff)"
+use_frac = input.bool(true, "Включить FracDiff Сигналы", group = grp_frac)
+frac_macro = input.bool(false, "Макро-фильтр (Только по тренду TVC-2)", group = grp_frac)
+frac_d          = input.float(0.45, "Порядок дифференцирования (d)", minval=0.1, maxval=0.9, step=0.05, group = grp_frac)
+frac_len = input.int(20, "Окно памяти (Lookback)", minval=5, maxval=100, group = grp_frac)
+frac_z_thresh = input.float(1.0, "Порог значимости Z-Score (FD)", minval=0.0, step=0.25, group = grp_frac)
+
+grp_hybrid = "Hybrid Engine (3D Emission M-HMM & FracDiff Features)"
+use_hybrid      = input.bool(true, "Включить Вероятностный Модуль", group = grp_hybrid)
+hmm_temp        = input.float(1.0, "Softmax Temperature (Сглаживание)", minval=0.1, step=0.1, group=grp_hybrid)
+bayes_len       = input.int(20, "Lookback Period (HMM & Viterbi)", minval=5, group=grp_hybrid)
+
+grp_hybrid_adv = "Продвинутые настройки HMM (Фильтры)"
+use_student_t = input.bool(true, "Использовать распределение Стьюдента (Fat Tails)", group = grp_hybrid_adv)
+use_garch_hmm = input.bool(true, "Адаптивные хвосты Стьюдента (GARCH effect)", group = grp_hybrid_adv)
+hmm_nu = input.float(5.0, "Степени свободы Стьюдента (Nu)", minval=1.0, step=1.0, group = grp_hybrid_adv)
+
+grp_adv = "Продвинутая математика"
+use_quad1   = input.bool(true, "Квадратичная рег. (Fast TVC)", group = grp_adv)
+use_quad2   = input.bool(false, "Квадратичная рег. (Slow TVC-2)", group = grp_adv)
+
+grp_combo = "Слияние Сигналов (Combo Q-SYNC & Отрисовка)"
+show_qsync      = input.bool(true, "Показывать комбо-сигнал Q-SYNC", group=grp_combo)
+use_soft_qsync  = input.bool(true, "Включить Soft Ensemble Voting (Непрерывное слияние)", group=grp_combo)
+qsync_w_kssa    = input.float(0.25, "Вес KSSA в Ансамбле", minval=0.0, step=0.05, group=grp_combo)
+qsync_w_sgd     = input.float(0.25, "Вес Regressor (RLS) в Ансамбле", minval=0.0, step=0.05, group=grp_combo)
+qsync_w_hmm     = input.float(0.25, "Вес HMM в Ансамбле", minval=0.0, step=0.05, group=grp_combo)
+qsync_w_fd      = input.float(0.15, "Вес FracDiff в Ансамбле", minval=0.0, step=0.05, group=grp_combo)
+qsync_w_div     = input.float(0.10, "Вес Взаимной Информации (MI)", minval=0.0, step=0.05, group=grp_combo)
+qsync_thresh    = input.float(0.70, "Порог активации Q-SYNC", minval=0.4, maxval=0.95, step=0.05, group=grp_combo)
+qsync_col_buy   = input.color(color.new(#00ff00, 0), "Цвет Q-SYNC Buy", group=grp_combo)
+qsync_col_sell  = input.color(color.new(#ff0000, 0), "Цвет Q-SYNC Sell", group=grp_combo)
+show_kssa_sig   = input.bool(true, "Показывать сигнал KSSA на графике", group=grp_combo)
+show_sgd_sig    = input.bool(false, "Показывать сигнал RLS на графике", group=grp_combo)
+show_hmm_sig    = input.bool(false, "Показывать сигнал HMM на графике", group=grp_combo)
+hmm_col_buy     = input.color(color.new(#ff9800, 0), "Цвет HMM Buy (Markov)", group=grp_combo)
+hmm_col_sell    = input.color(color.new(#9c27b0, 0), "Цвет HMM Sell (Markov)", group=grp_combo)
+show_fd_sig     = input.bool(false, "Показывать сигнал FracDiff на графике", group=grp_combo)
+show_div_sig    = input.bool(false, "Показывать сигналы Info Div на графике", group=grp_combo)
+
+grp_kelly = "Динамический Риск-Менеджмент (Kelly)"
+use_kelly       = input.bool(false, "Включить динамический Kelly Criterion (Brier Score)", group = grp_kelly)
+kelly_len       = input.int(50, "Окно оценки предсказаний", minval=10, maxval=200, group = grp_kelly)
+
+// =========================================================================
+// ГЛОБАЛЬНЫЕ ФУНКЦИИ (FracDiff вынесена для HMM и RLS)
+// =========================================================================
+f_fwfd_core(_src, _d, _len) =>
+    float _diff = 0.0
+    float _w = 1.0
+    for k = 0 to _len - 1
+        _diff += nz(_src[k], nz(_src)) * _w
+        _w := -_w * (_d - k) / (k + 1.0)
+    _diff
+
+// =========================================================================
+// 2. ИНИЦИАЛИЗАЦИЯ И ГЛОБАЛЬНЫЙ SCOPE
+// =========================================================================
+f_tanh(float _x) =>
+    float _exp2x = math.exp(math.max(math.min(2.0 * _x, 20.0), -20.0))
+    (_exp2x - 1.0) / (_exp2x + 1.0)
+
+ha_ticker = ticker.heikinashi(syminfo.tickerid)
+ha_close  = request.security(ha_ticker, timeframe.period, close)
+float src = src_type == "HLC3" ? hlc3 : src_type == "Heikin Ashi" ? ha_close : close
+
+// НОРМАЛИЗАЦИЯ (Защита от 0 в логарифмической шкале через 1e-12)
+float math_src = reg_mode == "Logarithmic" ? math.log(math.max(src, 1e-12)) : src
+float atr_val = nz(ta.atr(h_max), 1.0)
+
+float domain_atr = reg_mode == "Logarithmic" ? math.log(math.max(src + atr_val, 1e-12)) - math.log(math.max(src, 1e-12)) : atr_val
+
+float fast_ema = ta.ema(src, len_ma_fast)
+float fast_sma = ta.sma(src, len_ma_fast)
+float fast_ma_val = type_ma_fast == "EMA" ? fast_ema : fast_sma
+
+float med_ema = ta.ema(src, len_ma_med)
+float med_sma = ta.sma(src, len_ma_med)
+float med_ma_val = type_ma_med == "EMA" ? med_ema : med_sma
+
+float slow_ema = ta.ema(src, len_ma_slow)
+float slow_sma = ta.sma(src, len_ma_slow)
+float slow_ma_val = type_ma_slow == "EMA" ? slow_ema : slow_sma
+
+float vol_sma = nz(ta.sma(volume, 50), 1.0)
+float vol_norm = vol_sma > 0 ? math.min(volume / vol_sma, 10.0) : 1.0 
+float hl_sma = nz(ta.sma(high - low, 14), 1.0)
+
+float dyn_change      = math.abs(src - nz(src[er_len], src))
+float dyn_volatility  = nz(math.sum(math.abs(src - nz(src[1], src)), er_len), 1.0)
+float dyn_ER_raw      = dyn_volatility != 0 ? dyn_change / dyn_volatility : 0.0
+float dyn_ER_smoothed = nz(ta.wma(dyn_ER_raw, 2), 0.0)
+float dyn_short_atr   = nz(ta.atr(er_len), 1.0)
+float dyn_long_atr    = nz(ta.sma(dyn_short_atr, 100), dyn_short_atr)
+
+float h_dyn = h_max
+if use_adapt
+    if adapt_type == "Efficiency Ratio"
+        h_dyn := h_min + (h_max - h_min) * math.pow(1.0 - dyn_ER_smoothed, 2.0)
+    else
+        float vol_ratio_atr = dyn_long_atr != 0 ? dyn_short_atr / dyn_long_atr : 1.0
+        h_dyn := math.max(h_min, math.min(h_max, h_max * vol_ratio_atr))
+
+float h_dyn2 = h_max2 
+
+f_atan2(_y, _x) =>
+    float res = 0.0
+    if _x > 0
+        res := math.atan(_y / _x)
+    else if _x < 0 and _y >= 0
+        res := math.atan(_y / _x) + math.pi
+    else if _x < 0 and _y < 0
+        res := math.atan(_y / _x) - math.pi
+    else if _x == 0 and _y > 0
+        res := math.pi / 2
+    else if _x == 0 and _y < 0
+        res := -math.pi / 2
+    res
+
+// =========================================================================
+// 3. МАТЕМАТИЧЕСКАЯ ЛОГИКА TVC
+// =========================================================================
+f_get_weight(float u, string t) =>
+    float a_u = math.abs(u)
+    if a_u > 1.0
+        0.0
+    else if t == "Tricube"
+        math.pow(1.0 - math.pow(a_u, 3), 3)
+    else if t == "Epanechnikov"
+        0.75 * (1.0 - math.pow(a_u, 2))
+    else if t == "Gaussian"
+        math.exp(-0.5 * math.pow(a_u, 2))
+    else
+        1.0 - a_u
+
+f_calc_tvc(float src_series, string k_t, float h, bool quad, bool apply_vw) =>
+    float s0 = 0.0, float s1 = 0.0, float s2 = 0.0, float s3 = 0.0, float s4 = 0.0
+    float sy0 = 0.0, float sy1 = 0.0, float sy2 = 0.0
+    float s_cvd_y0 = 0.0, float s_cvd_y1 = 0.0, float s_cvd_y2 = 0.0
+    
+    int p = quad ? 3 : 2
+    int loop_h = math.ceil(h)
+    
+    float sum_w = 0.0, float sum_w_sq = 0.0 
+    
+    for i = 0 to loop_h
+        float u = i / h 
+        float base_w = f_get_weight(u, k_t)
+        float v_weight = apply_vw ? math.pow(math.max(nz(vol_norm[i], 1.0), 0.01), 0.33) : 1.0
+        float w = base_w * v_weight
+        
+        if w > 0 and not na(src_series[i])
+            sum_w += w
+            sum_w_sq += w * w
+
+    float eff_n = sum_w_sq > 0 ? (sum_w * sum_w) / sum_w_sq : math.max(1.0, sum_w)
+    float final_b0 = na, float b1 = na, float b2 = na, float cvd_vel = 0.0
+    float b0 = na, float r2 = na, float t_stat = na, float robust_dev = na
+    float smearing_est = 0.0 
+    
+    if sum_w > 0
+        for i = 0 to loop_h
+            float u = i / h 
+            float base_w = f_get_weight(u, k_t)
+            float v_weight = apply_vw ? math.pow(math.max(nz(vol_norm[i], 1.0), 0.01), 0.33) : 1.0
+            float raw_w = base_w * v_weight
+            
+            if raw_w > 0 and not na(src_series[i])
+                float w = raw_w / math.max(sum_w, 1e-10)
+                float val = math.max(src_series[i], 1e-12)
+                float y = reg_mode == "Logarithmic" ? math.log(val) : val
+                float x = -i
+                float x2 = x * x
+                
+                s0 += w, s1 += w * x, s2 += w * x2
+                if quad
+                    s3 += w * x2 * x, s4 += w * x2 * x2
+                    sy2 += w * y * x2
+                sy0 += w * y, sy1 += w * y * x
+                
+                if apply_vw
+                    float hl_range = high[i] - low[i]
+                    float cvd_delta = hl_range > 0 ? (2.0 * (close[i] - low[i]) / hl_range - 1.0) : 0.0
+                    float candle_cvd = nz(volume[i], 0.0) * cvd_delta
+                    s_cvd_y0 += w * candle_cvd
+                    s_cvd_y1 += w * candle_cvd * x
+                    if quad
+                        s_cvd_y2 += w * candle_cvd * x2
+        
+        float D = 0.0, float det = 0.0, float eps = 1e-10 
+        float lambda = 1e-4
+        float s0_r = s0 + lambda, float s2_r = s2 + lambda, float s4_r = s4 + lambda
+        
+        if quad
+            D := s0_r * (s2_r * s4_r - s3 * s3) - s1 * (s1 * s4_r - s3 * s2_r) + s2_r * (s1 * s3 - s2_r * s2_r)
+            if math.abs(D) > eps
+                b0 := (sy0*(s2_r*s4_r - s3*s3) - sy1*(s1*s4_r - s2_r*s3) + sy2*(s1*s3 - s2_r*s2_r)) / D
+                b1 := (s0_r*(sy1*s4_r - s3*sy2) - sy0*(s1*s4_r - s2_r*s3) + s2_r*(s1*sy2 - sy1*s2_r)) / D
+                b2 := (s0_r*(s2_r*sy2 - sy1*s3) - s1*(s1*sy2 - sy1*s2_r) + sy0*(s1*s3 - s2_r*s2_r)) / D
+                if apply_vw
+                    cvd_vel := (s0_r*(s_cvd_y1*s4_r - s3*s_cvd_y2) - s_cvd_y0*(s1*s4_r - s2_r*s3) + s2_r*(s1*s_cvd_y2 - s_cvd_y1*s2_r)) / D
+        else
+            det := s0_r * s2_r - s1 * s1
+            if math.abs(det) > eps
+                b0 := (sy0 * s2_r - s1 * sy1) / det
+                b1 := (s0_r * sy1 - s1 * sy0) / det
+                b2 := 0.0
+                if apply_vw
+                    cvd_vel := (s0_r * s_cvd_y1 - s1 * s_cvd_y0) / det
+
+        if not na(b0)
+            float tss = 0.0, float rss = 0.0
+            float avg_y = s0_r != 0 ? sy0 / s0_r : 0.0
+            array<float> residuals = array.new<float>()
+            
+            float smear_sum = 0.0
+            
+            for i = 0 to loop_h
+                float u = i / h
+                float base_w = f_get_weight(u, k_t)
+                float v_weight = apply_vw ? math.pow(math.max(nz(vol_norm[i], 1.0), 0.01), 0.33) : 1.0
+                float raw_w = base_w * v_weight
+                
+                if raw_w > 0 and not na(src_series[i])
+                    float w = raw_w / math.max(sum_w, 1e-10)
+                    float val = math.max(src_series[i], 1e-12)
+                    float y = reg_mode == "Logarithmic" ? math.log(val) : val
+                    float x = -i
+                    float y_est = b0 + b1 * x + b2 * x * x
+                    
+                    float err_val = y - y_est
+                    array.push(residuals, math.abs(err_val))
+                    rss += w * math.pow(err_val, 2)
+                    tss += w * math.pow(y - avg_y, 2)
+                    
+                    if reg_mode == "Logarithmic"
+                        smear_sum += w * math.exp(err_val)
+            
+            float mad = array.size(residuals) > 0 ? array.median(residuals) : 0.0
+            robust_dev := mad * 1.4826
+            float dof = math.max(eff_n - p, 1.0)
+            float var_est = rss / dof 
+            float r2_raw = tss != 0 ? 1.0 - (rss / tss) : 0.0
+            float adj_r2 = eff_n > p ? 1.0 - ((1.0 - r2_raw) * (eff_n - 1.0) / dof) : r2_raw
+            r2 := math.max(0.0, adj_r2)
+
+            float se_b1 = 0.0
+            if quad
+                if math.abs(D) > eps
+                    se_b1 := math.sqrt(math.max(var_est * (s0_r * s4_r - s2_r * s2_r) / D, 0.0))
+            else
+                if math.abs(det) > eps
+                    se_b1 := math.sqrt(math.max(var_est * (s0_r / det), 0.0))
+            
+            float w_norm = sum_w_sq > 0 ? sum_w / math.sqrt(sum_w_sq) : sum_w
+            se_b1 := se_b1 / math.max(w_norm, 1e-9)
+            t_stat := se_b1 != 0 ? b1 / se_b1 : 0.0
+            
+            smearing_est := reg_mode == "Logarithmic" ? (smear_sum > 0 ? smear_sum : math.exp(var_est / 2.0)) : 1.0
+            final_b0 := reg_mode == "Logarithmic" ? math.exp(b0) * smearing_est : b0
+
+    [final_b0, b1, b2, robust_dev, b0, r2, t_stat, cvd_vel]
+
+[tvc_r, b1_r, b2_r, dev_r, raw_b0_r, r2_r, t_stat_r, cvd_vel_r] = f_calc_tvc(src, k_type, h_dyn, use_quad1, use_vw)
+tvc = nz(tvc_r, src), b1 = nz(b1_r, 0.0), b2 = nz(b2_r, 0.0), dev = nz(dev_r, 0.0)
+r2 = nz(r2_r, 0.0), t_stat = nz(t_stat_r, 0.0), cvd_velocity = nz(cvd_vel_r, 0.0)
+
+[tvc2_r, b1_2_r, b2_2_r, dev_2_r, raw_b0_2_r, r2_2_r, t_stat_2_r, _] = f_calc_tvc(src, k_type2, h_dyn2, use_quad2, false)
+tvc2 = nz(tvc2_r, src), b1_2 = nz(b1_2_r, 0.0), b2_2 = nz(b2_2_r, 0.0), t_stat_2 = nz(t_stat_2_r, 0.0)
+
+float slope_pct = reg_mode == "Logarithmic" ? b1 * 100 : (b1 / math.max(tvc, 1e-6)) * 100
+float tsi = dev != 0 ? math.abs(b1) / dev : 0.0
+float min_vel = atr_val * 0.05 
+float norm_s = math.max(0.0, math.min(math.abs(t_stat) / 3.0, 1.0))
+
+float candle_body = math.abs(close - open)
+float avg_body = nz(ta.sma(candle_body, int(math.max(2, h_dyn))), candle_body)
+
+var int tvc_turn_bars_up = 0
+var int tvc_turn_bars_dn = 0
+tvc_turn_bars_up := (b1 > 0 and nz(b1[1]) <= 0) ? 0 : tvc_turn_bars_up + 1
+tvc_turn_bars_dn := (b1 < 0 and nz(b1[1]) >= 0) ? 0 : tvc_turn_bars_dn + 1
+
+// =========================================================================
+// 3.1 MTF REGIME ALIGNMENT (БЛОК ГРАВИТАЦИИ СТАРШЕГО ТФ)
+// =========================================================================
+f_get_htf_b1() =>
+    [_, _b1, _, _, _, _, _, _] = f_calc_tvc(src, k_type2, h_max2, use_quad2, false)
+    _b1
+
+float raw_htf_b1 = request.security(syminfo.tickerid, mtf_res, f_get_htf_b1()[1], lookahead = barmerge.lookahead_off)
+float htf_b1_2 = nz(raw_htf_b1, 0.0)
+
+bool mtf_up_ok = use_mtf ? (htf_b1_2 > 0) : true
+bool mtf_dn_ok = use_mtf ? (htf_b1_2 < 0) : true
+
+// =========================================================================
+// 4. ИНФОРМАЦИОННАЯ ЭНТРОПИЯ (MUTUAL INFORMATION / TRANSFER ENTROPY)
+// =========================================================================
+f_mutual_information(_x, _y, _len, _bins, _use_robust, _use_adaptive, _use_mm) =>
+    int actual_bins = _use_adaptive ? int(math.max(2, math.round(math.sqrt(_len)))) : _bins
+    float _h_x = 0.0, float _h_y = 0.0, float _h_xy = 0.0
+
+    if bar_index >= _len
+        float _max_x = _x[0], float _min_x = _x[0]
+        float _max_y = _y[0], float _min_y = _y[0]
+
+        if _use_robust
+            float _mean_x = nz(ta.sma(_x, _len), _x[0]), float _std_x = nz(ta.stdev(_x, _len), 1e-6)
+            float _mean_y = nz(ta.sma(_y, _len), _y[0]), float _std_y = nz(ta.stdev(_y, _len), 1e-6)
+            _max_x := _mean_x + 2.0 * _std_x, _min_x := _mean_x - 2.0 * _std_x
+            _max_y := _mean_y + 2.0 * _std_y, _min_y := _mean_y - 2.0 * _std_y
+        else
+            for i = 1 to _len - 1
+                float _vx = nz(_x[i], _x[0]), float _vy = nz(_y[i], _y[0])
+                if _vx > _max_x
+                    _max_x := _vx
+                if _vx < _min_x
+                    _min_x := _vx
+                if _vy > _max_y
+                    _max_y := _vy
+                if _vy < _min_y
+                    _min_y := _vy
+
+        float _range_x = math.max(_max_x - _min_x, 1e-6)
+        float _range_y = math.max(_max_y - _min_y, 1e-6)
+
+        array<float> _c_x = array.new<float>(actual_bins, 0.0)
+        array<float> _c_y = array.new<float>(actual_bins, 0.0)
+        array<float> _c_xy = array.new<float>(actual_bins * actual_bins, 0.0)
+
+        for i = 0 to _len - 1
+            float _vx = math.max(math.min(nz(_x[i], _x[0]), _max_x), _min_x)
+            float _vy = math.max(math.min(nz(_y[i], _y[0]), _max_y), _min_y)
+
+            int _bx = int(math.floor(((_vx - _min_x) / _range_x) * actual_bins))
+            int _by = int(math.floor(((_vy - _min_y) / _range_y) * actual_bins))
+
+            if _bx >= actual_bins
+                _bx := actual_bins - 1
+            if _by >= actual_bins
+                _by := actual_bins - 1
+            if _bx < 0
+                _bx := 0
+            if _by < 0
+                _by := 0
+
+            array.set(_c_x, _bx, array.get(_c_x, _bx) + 1.0)
+            array.set(_c_y, _by, array.get(_c_y, _by) + 1.0)
+            int _bxy = _bx * actual_bins + _by
+            array.set(_c_xy, _bxy, array.get(_c_xy, _bxy) + 1.0)
+
+        float _laplace = 1e-6
+        float _total_n = float(_len)
+
+        for i = 0 to actual_bins - 1
+            float _px = (array.get(_c_x, i) + _laplace) / (_total_n + actual_bins * _laplace)
+            _h_x -= _px * (math.log(_px) / math.log(2.0))
+
+            float _py = (array.get(_c_y, i) + _laplace) / (_total_n + actual_bins * _laplace)
+            _h_y -= _py * (math.log(_py) / math.log(2.0))
+
+            for j = 0 to actual_bins - 1
+                int _idx = i * actual_bins + j
+                float _pxy = (array.get(_c_xy, _idx) + _laplace) / (_total_n + (actual_bins * actual_bins) * _laplace)
+                _h_xy -= _pxy * (math.log(_pxy) / math.log(2.0))
+
+        if _use_mm
+            _h_x  += (actual_bins - 1.0) / (2.0 * _len * math.log(2.0))
+            _h_y  += (actual_bins - 1.0) / (2.0 * _len * math.log(2.0))
+            _h_xy += (actual_bins * actual_bins - 1.0) / (2.0 * _len * math.log(2.0))
+
+    float _mi = math.max(_h_x + _h_y - _h_xy, 0.0)
+    float _divergence = _h_x > 0 ? math.max(0.0, math.min(1.0, 1.0 - (_mi / _h_x))) : 1.0
+    _divergence
+
+float ent_input1 = 0.0
+if ent_source == "Raw Momentum"
+    ent_input1 := src - nz(src[1], src)
+else if ent_source == "Norm Momentum"
+    ent_input1 := (src - nz(src[1], src)) / math.max(atr_val, 1e-6)
+else if ent_source == "TVC Velocity"
+    ent_input1 := b1
+
+float ent_input2 = vol_norm
+
+float current_entropy = use_entropy ? f_mutual_information(ent_input1, ent_input2, ent_len, ent_bins, ent_robust, use_adaptive_bins, use_miller_madow) : 0.0
+float dyn_ent_thresh = ent_thresh
+if use_dyn_ent
+    dyn_ent_thresh := nz(ta.percentile_linear_interpolation(current_entropy, 100, ent_perc), ent_thresh)
+
+bool is_exhausted = use_exhaustion ? (candle_body > (atr_val * exh_thresh_atr) and ((b1 > 0 and close < open) or (b1 < 0 and close > open))) : false
+
+// Вычисление вероятностей дивергенции для Q-SYNC 
+float div_prob_buy = use_entropy ? ((b1 < 0 and current_entropy > dyn_ent_thresh) ? math.min(current_entropy, 1.0) : 0.0) : 0.0
+float div_prob_sell = use_entropy ? ((b1 > 0 and current_entropy > dyn_ent_thresh) ? math.min(current_entropy, 1.0) : 0.0) : 0.0
+bool div_sig_buy = use_entropy and div_prob_buy > 0.8 and nz(div_prob_buy[1]) <= 0.8
+bool div_sig_sell = use_entropy and div_prob_sell > 0.8 and nz(div_prob_sell[1]) <= 0.8
+
+// =========================================================================
+// 4.1 АЛГОРИТМ KSSA & BOX-JENKINS (AR-SSA CORE)
+// =========================================================================
+// Аналитическое вычисление AR коэффициентов методом Бёрга с GCV Ридж-регуляризацией
+method get_burg_ar_weights(array<float> data, int p, float alpha, float tau, bool strict_reflect) =>
+    int n = array.size(data)
+    array<float> a = array.new<float>(p, 0.0)
+    array<float> ef = array.copy(data)
+    array<float> eb = array.copy(data)
+    
+    // ВАЖНО: Huber-Bounded Variance для предотвращения паралича корней при сквизах
+    float var_x = 0.0
+    if n > 0
+        float m_x = array.avg(data)
+        float sum_sq = 0.0
+        for i = 0 to n - 1
+            float dev = array.get(data, i) - m_x
+            sum_sq += math.pow(math.max(-1.5, math.min(1.5, dev)), 2)
+        var_x := sum_sq / n
+
+    float ridge = alpha * var_x 
+    
+    if n > p and p > 0
+        for m = 1 to p
+            float num = 0.0
+            float den = 0.0
+            for i = m to n - 1
+                num += array.get(ef, i) * array.get(eb, i - 1)
+                den += math.pow(array.get(ef, i), 2) + math.pow(array.get(eb, i - 1), 2)
+                
+            // ВАЖНО: Адаптивное масштабирование Ридж-штрафа по степеням свободы (n - m)
+            float current_ridge = ridge * (n - m)
+            den += current_ridge // Жесткая стабилизация знаменателя Бёрга
+            
+            float k = den > 1e-12 ? (2.0 * num) / den : 0.0
+            // ВАЖНО (Предложение 3): Строгое отражение Шура-Кона внутрь единичного круга.
+            // Теорема Шура-Кона: AR-полином устойчив <=> все |k_m| < 1. Жёсткий clamp
+            // гарантирует это аналитически ДО применения мягкого сглаживающего барьера.
+            if strict_reflect
+                float eps_sc = 1e-3
+                k := math.sign(k) * math.min(math.abs(k), 1.0 - eps_sc)
+            // Аналитическое Левинсоновское сжатие (Schur-Cohn Stable AR)
+            k := k * (1.0 - math.exp(-math.pow(1.0 - math.abs(k), 2) / math.max(tau, 1e-6)))
+            array.set(a, m - 1, k)
+            
+            if m > 1
+                array<float> a_prev = array.copy(a)
+                for i = 0 to m - 2
+                    array.set(a, i, array.get(a_prev, i) - k * array.get(a_prev, m - 2 - i))
+                    
+            for i = n - 1 to m
+                float ef_new = array.get(ef, i) - k * array.get(eb, i - 1)
+                float eb_new = array.get(eb, i - 1) - k * array.get(ef, i)
+                array.set(ef, i, ef_new)
+                array.set(eb, i, eb_new)
+    a
+
+// Метод извлечения коэффициентов Minimum-Norm Linear Recurrent Formula (LRF) из сигнального подпространства (ESPRIT)
+// _vert_thresh: порог nu^2 для адаптивного verticality fallback (Предложение 4)
+method get_ssa_lrf_weights(matrix<float> U_r, int L, int actual_r, float _vert_thresh) =>
+    float nu2 = 0.0
+    array<float> pi_vec = array.new<float>(actual_r, 0.0)
+    for i = 0 to actual_r - 1
+        float pi_val = matrix.get(U_r, L - 1, i)
+        array.set(pi_vec, i, pi_val)
+        nu2 += math.pow(pi_val, 2)
+        
+    array<float> A = array.new<float>(L - 1, 0.0)
+    // ВАЖНО (Предложение 4): Адаптивный verticality fallback.
+    // Голяндина: vector forecast корректен при nu^2 < 1. При nu^2 -> 1 (verticality)
+    // вместо ОБНУЛЕНИЯ ряда (потеря сигнала) применяем регуляризованный коэффициент,
+    // ограничивая знаменатель (1 - nu^2) порогом (1 - _vert_thresh). Это сохраняет
+    // минимум-норменную recurrent-структуру и непрерывность прогноза.
+    float denom = 1.0 - nu2
+    float safe_denom = nu2 < _vert_thresh ? denom : math.max(1.0 - _vert_thresh, 1e-9)
+    float coef = 1.0 / safe_denom
+    for i = 0 to L - 2
+        float a_i = 0.0
+        for j = 0 to actual_r - 1
+            a_i += matrix.get(U_r, i, j) * array.get(pi_vec, j)
+        array.set(A, L - 2 - i, a_i * coef)
+    A
+
+f_ar_ssa_0lag(float src_series, float baseline_series, float vol_series, int L, int r, int bj_len, int p, int max_f_bars, bool use_mad, float alpha, float tau, bool _use_mssa, float _vol_w, bool _use_fading, float _fading_max, float _fading_min, float _diag_weight, string _forecast_algo, float _dyn_er, bool _use_toeplitz, string _rank_method, bool _use_prewhiten, bool _use_huber, bool _use_fbssa, bool _use_reortho, bool _unbias_toeplitz, bool _strict_reflect, float _vert_thresh) =>
+    float out = src_series
+    
+    if bar_index >= bj_len and use_kssa
+        // Динамическая память по Ляпунову
+        float dyn_rho = _use_fading ? _fading_min + (_fading_max - _fading_min) * _dyn_er : 1.0
+        
+        // 1. Формирование обучающей выборки (Текущий бар [0] включен для Zero-Lag Edge)
+        array<float> hist_p = array.new<float>(bj_len)
+        array<float> hist_v = array.new<float>(bj_len)
+        
+        for i = 0 to bj_len - 1
+            array.set(hist_p, i, nz(src_series[bj_len - 1 - i], src_series))
+            array.set(hist_v, i, nz(vol_series[bj_len - 1 - i], 1.0))
+            
+        // 2. L1-Робастное центрирование (Median Shift + MAD Scaling)
+        float loc_shift_p = 0.0
+        float loc_shift_v = 0.0
+        float mad_v = 0.0
+        float mad_p = 0.0
+        
+        if use_mad
+            array<float> sort_p = array.copy(hist_p)
+            array<float> sort_v = array.copy(hist_v)
+            array.sort(sort_p)
+            array.sort(sort_v)
+            loc_shift_p := array.size(sort_p) % 2 == 0 ? (array.get(sort_p, int(bj_len/2) - 1) + array.get(sort_p, int(bj_len/2))) / 2.0 : array.get(sort_p, int(bj_len/2))
+            loc_shift_v := array.size(sort_v) % 2 == 0 ? (array.get(sort_v, int(bj_len/2) - 1) + array.get(sort_v, int(bj_len/2))) / 2.0 : array.get(sort_v, int(bj_len/2))
+            
+            array<float> dev_p = array.new<float>(bj_len)
+            array<float> dev_v = array.new<float>(bj_len)
+            for i = 0 to bj_len - 1
+                array.set(dev_p, i, math.abs(array.get(hist_p, i) - loc_shift_p))
+                array.set(dev_v, i, math.abs(array.get(hist_v, i) - loc_shift_v))
+            array.sort(dev_p)
+            array.sort(dev_v)
+            mad_p := (array.size(dev_p) % 2 == 0 ? (array.get(dev_p, int(bj_len/2) - 1) + array.get(dev_p, int(bj_len/2))) / 2.0 : array.get(dev_p, int(bj_len/2))) * 1.4826
+            mad_v := (array.size(dev_v) % 2 == 0 ? (array.get(dev_v, int(bj_len/2) - 1) + array.get(dev_v, int(bj_len/2))) / 2.0 : array.get(dev_v, int(bj_len/2))) * 1.4826
+        else
+            loc_shift_p := array.avg(hist_p)
+            loc_shift_v := array.avg(hist_v)
+            for i = 0 to bj_len - 1
+                mad_p += math.pow(array.get(hist_p, i) - loc_shift_p, 2)
+                mad_v += math.pow(array.get(hist_v, i) - loc_shift_v, 2)
+            mad_p := math.sqrt(mad_p / bj_len)
+            mad_v := math.sqrt(mad_v / bj_len)
+            
+        for i = 0 to bj_len - 1
+            array.set(hist_p, i, mad_p > 1e-9 ? (array.get(hist_p, i) - loc_shift_p) / mad_p : (array.get(hist_p, i) - loc_shift_p))
+            array.set(hist_v, i, array.get(hist_v, i) - loc_shift_v)
+            
+        // Приведение робастной дисперсии объема к дисперсии цены
+        float vol_scale = mad_v > 1e-9 and mad_p > 1e-9 ? (mad_p / mad_v) * _vol_w : _vol_w
+        for i = 0 to bj_len - 1
+            array.set(hist_v, i, array.get(hist_v, i) * vol_scale)
+
+        // 2.5 Huber-Weighted Covariance Guard (Изолированное отсечение для матрицы)
+        array<float> hist_p_cov = array.copy(hist_p)
+        array<float> hist_v_cov = array.copy(hist_v)
+        if _use_huber
+            float delta = 1.345 // Huber оптимальный предел для N(0,1)
+            for i = 0 to bj_len - 1
+                array.set(hist_p_cov, i, math.max(-delta, math.min(delta, array.get(hist_p_cov, i))))
+                if _use_mssa
+                    array.set(hist_v_cov, i, math.max(-delta, math.min(delta, array.get(hist_v_cov, i))))
+
+        // 3. Вычисление автоковариационной матрицы: Toeplitz vs Standard (С защитой Хьюбера)
+        int actual_L = _use_mssa ? L * 2 : L
+        matrix<float> C_mat = matrix.new<float>(actual_L, actual_L, 0.0)
+        
+        if _use_toeplitz
+            array<float> R_pp = array.new<float>(L, 0.0)
+            array<float> R_vv = array.new<float>(L, 0.0)
+            array<float> R_pv = array.new<float>(L, 0.0)
+            array<float> R_vp = array.new<float>(L, 0.0)
+            
+            // ВАЖНО: Вычисление полной суммы весов для Biased Estimator (Гарантия PSD матрицы)
+            float total_w = 0.0
+            for t = 0 to bj_len - 1
+                total_w += _use_fading ? math.pow(dyn_rho, bj_len - 1 - t) : 1.0
+
+            // ВАЖНО (Предложение 2): PSD-Unbiased коррекция завала спектра.
+            // Biased-оценка делит R(k) на полную total_w, но окно лага k содержит лишь
+            // (N-k) слагаемых с меньшим накопленным весом W(k)=Sum_{t=0..N-1-k} rho^(N-1-(t+k)).
+            // Это систематически занижает R(k) при k->L (завал спектра). Компенсируем
+            // масштабным множителем W(0)/W(k) (diagonal tapering), сохраняя PSD: множитель
+            // положителен и монотонен, домножает симметричную автоковариацию на скаляр лага.
+            array<float> win_w = array.new<float>(L, 0.0)
+            if _unbias_toeplitz
+                for k = 0 to L - 1
+                    float wk = 0.0
+                    for t = 0 to bj_len - 1 - k
+                        wk += _use_fading ? math.pow(dyn_rho, bj_len - 1 - (t + k)) : 1.0
+                    array.set(win_w, k, wk)
+            
+            for k = 0 to L - 1
+                float sum_pp = 0.0, float sum_vv = 0.0, float sum_pv = 0.0, float sum_vp = 0.0
+                for t = 0 to bj_len - 1 - k
+                    float w = _use_fading ? math.pow(dyn_rho, bj_len - 1 - (t + k)) : 1.0
+                    float pt = array.get(hist_p_cov, t)
+                    float ptk = array.get(hist_p_cov, t + k)
+                    sum_pp += pt * ptk * w
+                    
+                    if _use_mssa
+                        float vt = array.get(hist_v_cov, t)
+                        float vtk = array.get(hist_v_cov, t + k)
+                        sum_vv += vt * vtk * w
+                        sum_pv += pt * vtk * w
+                        sum_vp += vt * ptk * w
+                
+                // Множитель компенсации: при unbias = W(0)/W(k), иначе = 1.0 (исходный biased)
+                float unbias_corr = _unbias_toeplitz ? (array.get(win_w, 0) / math.max(array.get(win_w, k), 1e-9)) : 1.0
+                array.set(R_pp, k, (sum_pp / math.max(total_w, 1e-9)) * unbias_corr)
+                if _use_mssa
+                    array.set(R_vv, k, (sum_vv / math.max(total_w, 1e-9)) * unbias_corr)
+                    array.set(R_pv, k, (sum_pv / math.max(total_w, 1e-9)) * unbias_corr)
+                    array.set(R_vp, k, (sum_vp / math.max(total_w, 1e-9)) * unbias_corr)
+                    
+            for r_i = 0 to L - 1
+                for c_i = 0 to L - 1
+                    int lag = math.abs(r_i - c_i)
+                    matrix.set(C_mat, r_i, c_i, array.get(R_pp, lag))
+                    if _use_mssa
+                        matrix.set(C_mat, r_i + L, c_i + L, array.get(R_vv, lag))
+                        if r_i >= c_i
+                            matrix.set(C_mat, r_i, c_i + L, array.get(R_vp, lag))
+                            matrix.set(C_mat, r_i + L, c_i, array.get(R_pv, lag))
+                        else
+                            matrix.set(C_mat, r_i, c_i + L, array.get(R_pv, lag))
+                            matrix.set(C_mat, r_i + L, c_i, array.get(R_vp, lag))
+        else
+            int K_hist = bj_len - L + 1
+            matrix<float> X_tmp = matrix.new<float>(actual_L, K_hist, 0.0)
+            for j = 0 to K_hist - 1
+                for i = 0 to L - 1
+                    float pt = array.get(hist_p_cov, i + j)
+                    float w = _use_fading ? math.pow(dyn_rho, K_hist - 1 - j) : 1.0
+                    matrix.set(X_tmp, i, j, pt * math.sqrt(w))
+                    if _use_mssa
+                        float vt = array.get(hist_v_cov, i + j)
+                        matrix.set(X_tmp, i + L, j, vt * math.sqrt(w))
+            C_mat := matrix.mult(X_tmp, matrix.transpose(X_tmp))
+            for r_i = 0 to actual_L - 1
+                for c_i = 0 to actual_L - 1
+                    matrix.set(C_mat, r_i, c_i, matrix.get(C_mat, r_i, c_i) / K_hist)
+                    
+        // 3.5 Forward-Backward Spatial Smoothing (Удвоение стабильности ковариации)
+        if _use_fbssa
+            matrix<float> C_fb = matrix.new<float>(actual_L, actual_L, 0.0)
+            for r_i = 0 to actual_L - 1
+                for c_i = 0 to actual_L - 1
+                    float val1 = matrix.get(C_mat, r_i, c_i)
+                    float val2 = matrix.get(C_mat, actual_L - 1 - r_i, actual_L - 1 - c_i)
+                    matrix.set(C_fb, r_i, c_i, (val1 + val2) / 2.0)
+            C_mat := matrix.copy(C_fb)
+
+        // 4. Истинная SVD Декомпозиция
+        array<float> eig_vals_raw = matrix.eigenvalues(C_mat)
+        matrix<float> eig_vecs_raw = matrix.eigenvectors(C_mat)
+        
+        array<int> sort_idx = array.sort_indices(eig_vals_raw)
+        int num_vals = array.size(sort_idx)
+        
+        // 5. Subspace Filtering: Soft Shrinkage vs OHT (Marchenko-Pastur)
+        array<float> clean_eig_vals = array.copy(eig_vals_raw)
+        float noise_var = 0.0
+        float mp_threshold = 0.0
+        
+        if _use_prewhiten and actual_L > 2
+            array<float> tail_vals = array.new<float>(0)
+            for i = int(actual_L/2) to actual_L - 1
+                array.push(tail_vals, math.max(array.get(eig_vals_raw, array.get(sort_idx, num_vals - 1 - i)), 0.0))
+            array.sort(tail_vals)
+            noise_var := array.size(tail_vals) > 0 ? array.median(tail_vals) : 0.0
+            
+            if _rank_method == "Marchenko-Pastur"
+                float gamma_ratio = actual_L / math.max(bj_len - actual_L + 1, 1.0)
+                mp_threshold := noise_var * math.pow(1.0 + math.sqrt(gamma_ratio), 2.0)
+
+        for i = 0 to actual_L - 1
+            int o_idx = array.get(sort_idx, num_vals - 1 - i)
+            float ev = math.abs(array.get(eig_vals_raw, o_idx))
+            float clean_ev = 0.0
+            if _rank_method == "Marchenko-Pastur"
+                clean_ev := ev > mp_threshold ? ev : 0.0
+            else
+                clean_ev := math.max(0.0, ev - noise_var)
+            array.set(clean_eig_vals, o_idx, clean_ev)
+
+        // 6. Динамический отбор компонент (Shannon-SVD / Colored Noise MDL / MP / Fixed)
+        int actual_r = math.min(r, actual_L)
+        if actual_L > 2
+            if _rank_method == "Shannon Entropy"
+                float sum_eig = 0.0
+                for i = 0 to actual_L - 1
+                    int o_idx = array.get(sort_idx, num_vals - 1 - i)
+                    sum_eig += math.max(array.get(clean_eig_vals, o_idx), 1e-12)
+                
+                float total_H = 0.0
+                array<float> shannon_H = array.new<float>(actual_L, 0.0)
+                for i = 0 to actual_L - 1
+                    int o_idx = array.get(sort_idx, num_vals - 1 - i)
+                    float norm_eig = math.max(array.get(clean_eig_vals, o_idx), 1e-12) / sum_eig
+                    float h_i = -norm_eig * math.log(norm_eig)
+                    array.set(shannon_H, i, h_i)
+                    total_H += h_i
+                    
+                float cum_H = 0.0
+                int opt_r = 1
+                for i = 0 to actual_L - 1
+                    cum_H += array.get(shannon_H, i)
+                    if (cum_H / math.max(total_H, 1e-12)) >= 0.95
+                        opt_r := i + 1
+                        break
+                actual_r := math.max(1, opt_r)
+                
+            else if _rank_method == "Marchenko-Pastur"
+                int opt_r = 0
+                for i = 0 to actual_L - 1
+                    int o_idx = array.get(sort_idx, num_vals - 1 - i)
+                    if math.abs(array.get(eig_vals_raw, o_idx)) > mp_threshold
+                        opt_r += 1
+                actual_r := math.max(1, opt_r)
+                
+            else if _rank_method == "Colored Noise MDL"
+                float min_mdl = 1e12
+                int opt_r = 1
+                for k = 1 to actual_L - 1
+                    float sum_arith = 0.0
+                    float sum_geom_log = 0.0
+                    int count = actual_L - k
+                    for i = k to actual_L - 1
+                        int o_idx = array.get(sort_idx, num_vals - 1 - i)
+                        float eig = math.max(array.get(clean_eig_vals, o_idx), 1e-12)
+                        sum_arith += eig
+                        sum_geom_log += math.log(eig)
+                    sum_arith /= count
+                    sum_geom_log /= count
+                    
+                    float ar1_penalty = math.max(1.0 - _dyn_er, 0.1)
+                    float penalty = 0.5 * k * (2 * actual_L - k) * math.log(bj_len) * ar1_penalty
+                    float log_ratio = sum_geom_log - math.log(sum_arith)
+                    float mdl_val = -bj_len * count * log_ratio + penalty
+                    
+                    if mdl_val < min_mdl
+                        min_mdl := mdl_val
+                        opt_r := k
+                actual_r := opt_r
+            
+        // Построение сырого базиса U_raw (БЕЗ prewhiten-scale) для корректной реортогонализации
+        matrix<float> U_raw = matrix.new<float>(actual_L, actual_r, 0.0)
+        for i = 0 to actual_r - 1
+            int orig_idx = array.get(sort_idx, num_vals - 1 - i)
+            for row = 0 to actual_L - 1
+                matrix.set(U_raw, row, i, matrix.get(eig_vecs_raw, row, orig_idx))
+
+        // ВАЖНО (Предложение 1): Модифицированный Грам-Шмидт (MGS) реортогонализация.
+        // matrix.eigenvectors() при кратных/близких собственных значениях (рыночный шум)
+        // теряет ортонормированность U^T*U=I. Проектор U*U^T ортогонален ТОЛЬКО на ОНБ;
+        // иначе реконструкция искажается -> лаг и шум. MGS численно устойчив (ошибка
+        // O(eps*kappa) против O(eps*kappa^2) у классического GS): проекции вычитаются
+        // ПОСЛЕДОВАТЕЛЬНО с обновлением вектора после каждого шага.
+        if _use_reortho
+            for col_k = 0 to actual_r - 1
+                // Вычитание проекций на уже ортонормированные столбцы j < col_k
+                // ВАЖНО: в Pine цикл "0 to -1" идёт ОБРАТНО (даёт col_j=-1), поэтому при
+                // col_k=0 внутренний цикл пропускаем явно во избежание выхода за границы.
+                if col_k > 0
+                    for col_j = 0 to col_k - 1
+                        float dot_kj = 0.0
+                        for row = 0 to actual_L - 1
+                            dot_kj += matrix.get(U_raw, row, col_k) * matrix.get(U_raw, row, col_j)
+                        for row = 0 to actual_L - 1
+                            matrix.set(U_raw, row, col_k, matrix.get(U_raw, row, col_k) - dot_kj * matrix.get(U_raw, row, col_j))
+                // Нормировка столбца col_k
+                float norm_k = 0.0
+                for row = 0 to actual_L - 1
+                    norm_k += math.pow(matrix.get(U_raw, row, col_k), 2)
+                norm_k := math.sqrt(norm_k)
+                if norm_k > 1e-12
+                    for row = 0 to actual_L - 1
+                        matrix.set(U_raw, row, col_k, matrix.get(U_raw, row, col_k) / norm_k)
+
+        // Финальный U_r: применение prewhiten soft-shrinkage scale к ОНБ-векторам
+        matrix<float> U_r = matrix.new<float>(actual_L, actual_r, 0.0)
+        for i = 0 to actual_r - 1
+            int orig_idx = array.get(sort_idx, num_vals - 1 - i)
+            float orig_ev = math.max(math.abs(array.get(eig_vals_raw, orig_idx)), 1e-12)
+            float scale = _use_prewhiten ? math.sqrt(math.max(array.get(clean_eig_vals, orig_idx) / orig_ev, 0.0)) : 1.0
+            for row = 0 to actual_L - 1
+                matrix.set(U_r, row, i, matrix.get(U_raw, row, i) * scale)
+                
+        // 7. Извлечение коэффициентов прогнозирования (На истинном массиве цены)
+        array<float> ar_coeffs = array.new<float>(0)
+        float alpha_dyn = alpha * math.max(0.01, 1.0 - _dyn_er)
+        if _use_mssa or _forecast_algo == "Burg AR"
+            ar_coeffs := hist_p.get_burg_ar_weights(p, alpha_dyn, tau, _strict_reflect)
+        else // SSA LRF (только для 1D)
+            ar_coeffs := get_ssa_lrf_weights(U_r, L, actual_r, _vert_thresh)
+            
+        // 8. Forecast Embedding (Удлинение ряда)
+        array<float> ext_p = array.copy(hist_p)
+        array<float> ext_v = array.copy(hist_v)
+        int dyn_f_bars = int(math.max(1.0, math.round(max_f_bars * _dyn_er)))
+        int p_len = array.size(ar_coeffs)
+        
+        for f = 1 to dyn_f_bars
+            float pred_p = 0.0
+            int curr_len = array.size(ext_p)
+            for k = 1 to p_len
+                pred_p += array.get(ar_coeffs, k - 1) * array.get(ext_p, curr_len - k)
+            array.push(ext_p, pred_p)
+            // ВАЖНО: Martingale Forecast для объема, устраняющий Dirac Impulse Lag
+            float pred_v = _use_mssa ? array.get(ext_v, curr_len - 1) : 0.0
+            array.push(ext_v, pred_v)
+            
+        // 9. Построение расширенной траекторной матрицы
+        int N_ext = array.size(ext_p)
+        int K_cols_ext = N_ext - L + 1
+        matrix<float> X_ext_mat = matrix.new<float>(actual_L, K_cols_ext, 0.0)
+        for j = 0 to K_cols_ext - 1
+            for i = 0 to L - 1
+                matrix.set(X_ext_mat, i, j, array.get(ext_p, i + j))
+                if _use_mssa
+                    matrix.set(X_ext_mat, i + L, j, array.get(ext_v, i + j))
+                    
+        // 10. Проекция на сигнальное подпространство
+        matrix<float> X_rec = matrix.mult(U_r, matrix.mult(matrix.transpose(U_r), X_ext_mat))
+        
+        // 11. Взвешенная Ганкелизация с ортогональным спектральным окном Ханна-Натолла
+        int target_t = bj_len - 1
+        float rec_val = 0.0
+        float sum_diag_weights = 0.0
+        
+        for i = 0 to L - 1
+            int j = target_t - i
+            if j >= 0 and j < K_cols_ext
+                float norm_i = L > 1 ? float(i) / float(L - 1) : 0.0
+                float w_nuttall = 0.3635819 - 0.4891775 * math.cos(2.0 * math.pi * norm_i) + 0.1365995 * math.cos(4.0 * math.pi * norm_i) - 0.0106411 * math.cos(6.0 * math.pi * norm_i)
+                float w = math.pow(w_nuttall, _diag_weight) 
+                
+                rec_val += matrix.get(X_rec, i, j) * w
+                sum_diag_weights += w
+                
+        float final_scaled = sum_diag_weights > 0 ? rec_val / sum_diag_weights : 0.0
+        out := loc_shift_p + (final_scaled * mad_p)
+        
+    out
+
+float tvc_baseline = reg_mode == "Logarithmic" ? math.log(math.max(tvc, 1e-12)) : tvc
+float kssa_val = f_ar_ssa_0lag(math_src, tvc_baseline, vol_norm, kssa_len, kssa_comp, kssa_bj_len, kssa_ar_order, kssa_forecast, kssa_use_mad, kssa_ar_reg, kssa_ar_tau, kssa_use_mssa, kssa_vol_w, kssa_use_fading, kssa_fading_max, kssa_fading_min, kssa_diag_weight, kssa_forecast_algo, dyn_ER_smoothed, kssa_use_toeplitz, kssa_rank_method, kssa_use_prewhiten, kssa_use_huber, kssa_use_fbssa, kssa_use_reortho, kssa_unbias_toeplitz, kssa_strict_reflect, kssa_vert_thresh)
+float kssa_final = kssa_val // Проброс алиаса для совместимости (Модули 8 и 10)
+
+// --- КИНЕМАТИКА И ФОРМИРОВАНИЕ СИГНАЛОВ ---
+float kssa_slope = kssa_val - nz(kssa_val[1], kssa_val)
+float kssa_curv = kssa_slope - nz(kssa_slope[1], 0.0)
+float kssa_jerk = kssa_curv - nz(kssa_curv[1], 0.0) 
+
+float kssa_slope_mean = ta.sma(kssa_slope, kssa_bj_len)
+float kssa_slope_dev = math.max(ta.stdev(kssa_slope, kssa_bj_len), 1e-6)
+float kssa_signal_strength = math.abs((kssa_slope - kssa_slope_mean) / kssa_slope_dev)
+
+float final_kssa_thresh = nz(ta.percentile_linear_interpolation(kssa_signal_strength, 100, kssa_sig_perc), 1.0)
+bool kssa_valid = (kssa_signal_strength > final_kssa_thresh)
+
+// КАЛИБРОВКА A+C: сила КРИВИЗНЫ для упреждающего разворота (компонент C / Zero-Lag).
+// Эталонные развороты (Alarm) ловятся раньше пересечения наклона за счёт смены знака
+// кривизны; фильтр по перцентилю силы кривизны отсекает микрошум.
+float kssa_curv_mean = ta.sma(kssa_curv, kssa_bj_len)
+float kssa_curv_dev = math.max(ta.stdev(kssa_curv, kssa_bj_len), 1e-6)
+float kssa_curv_strength = math.abs((kssa_curv - kssa_curv_mean) / kssa_curv_dev)
+float kssa_curv_thresh = nz(ta.percentile_linear_interpolation(kssa_curv_strength, 100, kssa_curv_perc), 1.0)
+bool kssa_curv_valid = (kssa_curv_strength > kssa_curv_thresh)
+
+bool tvc_allow_up = t_stat > -2.0
+bool tvc_allow_dn = t_stat < 2.0
+
+// Ранние развороты и точные пересечения (Zero-Lag Edge)
+bool kssa_early_up = use_kssa and kssa_curv > 0 and nz(kssa_curv[1]) <= 0 and kssa_slope < 0 and tvc_allow_up
+bool kssa_early_dn = use_kssa and kssa_curv < 0 and nz(kssa_curv[1]) >= 0 and kssa_slope > 0 and tvc_allow_dn
+
+bool kssa_cross_up = kssa_slope > 0 and nz(kssa_slope[1]) <= 0
+bool kssa_cross_dn = kssa_slope < 0 and nz(kssa_slope[1]) >= 0
+
+// КАЛИБРОВКА A+C: сырой combo-сигнал (до cooldown).
+// Компонент C (early): смена знака кривизны при подтверждённой силе кривизны -> Zero-Lag разворот.
+// Компонент A (turn): пересечение наклона при подтверждённой силе наклона -> точность.
+bool kssa_raw_up = kssa_use_combo ? ((kssa_early_up and kssa_curv_valid) or (kssa_cross_up and kssa_valid)) : (kssa_cross_up and kssa_valid)
+bool kssa_raw_dn = kssa_use_combo ? ((kssa_early_dn and kssa_curv_valid) or (kssa_cross_dn and kssa_valid)) : (kssa_cross_dn and kssa_valid)
+
+// КАЛИБРОВКА A+C: Cooldown-дедупликация (минимальный интервал между однотипными сигналами).
+// Подавляет повторные срабатывания внутри одного разворота, повышая совпадение с эталоном.
+var int kssa_last_up_bar = -1000000
+var int kssa_last_dn_bar = -1000000
+bool kssa_cd_up_ok = (bar_index - kssa_last_up_bar) >= kssa_cooldown
+bool kssa_cd_dn_ok = (bar_index - kssa_last_dn_bar) >= kssa_cooldown
+
+bool kssa_turn_up = use_kssa and kssa_raw_up and kssa_cd_up_ok and mtf_up_ok and tvc_allow_up
+bool kssa_turn_dn = use_kssa and kssa_raw_dn and kssa_cd_dn_ok and mtf_dn_ok and tvc_allow_dn
+
+if kssa_turn_up
+    kssa_last_up_bar := bar_index
+if kssa_turn_dn
+    kssa_last_dn_bar := bar_index
+
+// =========================================================================
+// 4.2 Фрактальное дифференцирование
+// =========================================================================
+f_frac_diff(_src, _d, _len) =>
+    float _diff = 0.0
+    float _sum_w = 0.0
+    float _w = 1.0
+    for k = 0 to _len - 1
+        _diff += nz(_src[k], _src) * _w
+        _sum_w += math.abs(_w)
+        _w := -_w * (_d - k) / (k + 1.0)
+    _diff / math.max(_sum_w, 1e-6)
+
+float fd_val = use_frac ? f_frac_diff(math_src, frac_d, frac_len) : 0.0
+float fd_smooth = use_frac ? ta.wma(fd_val, 3) : 0.0
+float fd_slope = fd_smooth - nz(fd_smooth[1], fd_smooth)
+
+float fd_mean = use_frac ? ta.sma(fd_smooth, frac_len) : 0.0
+float fd_dev  = use_frac ? ta.stdev(fd_smooth, frac_len) : 0.0
+float fd_z    = use_frac and fd_dev > 0 ? (fd_smooth - fd_mean) / fd_dev : 0.0
+
+float fd_prob_buy = use_frac ? math.max(0.0, math.min(-fd_z / frac_z_thresh, 1.0)) : 0.0
+float fd_prob_sell = use_frac ? math.max(0.0, math.min(fd_z / frac_z_thresh, 1.0)) : 0.0
+
+bool macro_up_ok = frac_macro ? (b1_2 > 0) : true
+bool macro_dn_ok = frac_macro ? (b1_2 < 0) : true
+
+bool fd_turn_up = use_frac and fd_slope > 0 and nz(fd_slope[1], fd_slope) <= 0 and nz(fd_z[1], 0) < -frac_z_thresh and macro_up_ok and mtf_up_ok 
+bool fd_turn_dn = use_frac and fd_slope < 0 and nz(fd_slope[1], fd_slope) >= 0 and nz(fd_z[1], 0) > frac_z_thresh and macro_dn_ok and mtf_dn_ok 
+
+// =========================================================================
+// 5. Hilbert Transform
+// =========================================================================
+float hilbert_smooth = ta.wma(src, 4)
+float detrender = 0.0962 * hilbert_smooth + 0.5769 * nz(hilbert_smooth[2]) - 0.5769 * nz(hilbert_smooth[4]) - 0.0962 * nz(hilbert_smooth[6])
+float q1 = 0.0962 * detrender + 0.5769 * nz(detrender[2]) - 0.5769 * nz(detrender[4]) - 0.0962 * nz(detrender[6])
+float i1 = nz(detrender[3])
+
+float raw_phase = f_atan2(q1, i1) * 180.0 / math.pi
+var float prev_raw_phase = 0.0
+var float unwrapped_phase = 0.0
+
+float phase_diff = raw_phase - prev_raw_phase
+if phase_diff > 180.0
+    phase_diff -= 360.0
+if phase_diff < -180.0
+    phase_diff += 360.0
+    
+unwrapped_phase += phase_diff
+prev_raw_phase := raw_phase
+
+float smoothed_unwrapped = ta.wma(unwrapped_phase, 3)
+float hilbert_phase = (smoothed_unwrapped % 360.0 + 360.0) % 360.0
+
+bool phase_bull = true 
+bool phase_bear = true
+if use_hilbert
+    if hilbert_phase > 180 and hilbert_phase < 360
+        phase_bear := false
+    if hilbert_phase > 0 and hilbert_phase < 180
+        phase_bull := false
+
+// =========================================================================
+// 6. Z-SCORE СИГНАЛЫ И ЗАЩИТА ОТ ПОЗДНИХ ВХОДОВ 
+// =========================================================================
+int stdev_len = int(math.max(2, math.floor(h_dyn)))
+float stdev_src = reg_mode == "Logarithmic" ? math.log(math.max(src, 1e-12)) : src
+float price_stdev = nz(ta.stdev(stdev_src, stdev_len), 1e-6)
+
+float w_trend = norm_s 
+float hybrid_dev = math.sqrt(math.max((1.0 - w_trend) * dev * dev + w_trend * price_stdev * price_stdev, 1e-6))
+float z_score = reg_mode == "Logarithmic" ? math.log(src / math.max(tvc, 1e-6)) / hybrid_dev : (src - tvc) / hybrid_dev
+
+var int tvc_trend_age = 0
+bool same_dir = (b1 > 0 and nz(b1[1], b1) > 0) or (b1 < 0 and nz(b1[1], b1) < 0)
+tvc_trend_age := same_dir ? tvc_trend_age + 1 : 0
+
+float age_weighted = tvc_trend_age / math.max(1.0, (price_stdev / math.max(atr_val, 1e-6)))
+
+bool z_guard_buy  = use_z_guard ? (z_score < max_z_entry) : true
+bool z_guard_sell = use_z_guard ? (z_score > -max_z_entry) : true
+
+bool fresh_buy  = use_freshness ? (b1 > 0 and age_weighted <= max_bars_late) : true
+bool fresh_sell = use_freshness ? (b1 < 0 and age_weighted <= max_bars_late) : true
+
+float tvc_accel = b1 - nz(b1[1], 0.0)
+float accel_dev = nz(ta.stdev(tvc_accel, int(math.max(5, h_dyn))), 1e-6)
+bool accel_up = tvc_accel > accel_dev * accel_filter_mult and nz(tvc_accel[1], 0.0) <= accel_dev * accel_filter_mult and mtf_up_ok 
+bool accel_dn = tvc_accel < -accel_dev * accel_filter_mult and nz(tvc_accel[1], 0.0) >= -accel_dev * accel_filter_mult and mtf_dn_ok 
+
+bool turn_up = b1 > 0 and nz(b1[1], 0) <= 0 and mtf_up_ok 
+bool turn_dn = b1 < 0 and nz(b1[1], 0) >= 0 and mtf_dn_ok 
+
+bool z_ext_buy = z_score <= -1.5
+bool z_ext_sell = z_score >= 1.5
+
+float z_buy_persist_sum = math.sum(z_ext_buy ? 1.0 : 0.0, z_persist)
+float z_sell_persist_sum = math.sum(z_ext_sell ? 1.0 : 0.0, z_persist)
+
+var bool buy_spring_loaded = false
+var bool sell_spring_loaded = false
+
+if z_buy_persist_sum == z_persist
+    buy_spring_loaded := true
+if z_sell_persist_sum == z_persist
+    sell_spring_loaded := true
+
+bool z_sig_buy = buy_spring_loaded and b1 > 0 and tvc_turn_bars_up <= z_tol_window and mtf_up_ok 
+bool z_sig_sell = sell_spring_loaded and b1 < 0 and tvc_turn_bars_dn <= z_tol_window and mtf_dn_ok 
+
+if b1 > 0
+    buy_spring_loaded := false
+if b1 < 0
+    sell_spring_loaded := false
+
+bool kssa_confirmed_buy  = kssa_turn_up and b1 > 0 and z_score < -1 and r2 > 0.3 and mtf_up_ok 
+bool kssa_confirmed_sell = kssa_turn_dn and b1 < 0 and z_score > 1  and r2 > 0.3 and mtf_dn_ok 
+
+bool div_bull = b1_2 > 0 and b1 < 0 and z_score < -1.5 and math.abs(b1) > min_vel and mtf_up_ok 
+bool div_bear = b1_2 < 0 and b1 > 0 and z_score > 1.5 and math.abs(b1) > min_vel and mtf_dn_ok 
+
+bool curvature_flip_up = use_quad1 and b2 > 0 and nz(b2[1], b2) <= 0 and mtf_up_ok 
+bool curvature_flip_dn = use_quad1 and b2 < 0 and nz(b2[1], b2) >= 0 and mtf_dn_ok 
+ 
+// =========================================================================
+// 7. KALMAN FILTER 
+// =========================================================================
+var float k_x = na
+var float k_v = 0.0
+var float k_a = 0.0
+var matrix<float> P_k = matrix.new<float>(3, 3, 0.0)
+
+float dt = 1.0
+float math_var = math.max(nz(ta.variance(math_src, 5), 1e-6), 1e-6)
+
+if na(k_x)
+    k_x := math_src
+    matrix.set(P_k, 0, 0, math_var), matrix.set(P_k, 1, 1, math_var), matrix.set(P_k, 2, 2, math_var)
+
+float p00_k = matrix.get(P_k, 0, 0), float p01_k = matrix.get(P_k, 0, 1), float p02_k = matrix.get(P_k, 0, 2)
+float p10_k = matrix.get(P_k, 1, 0), float p11_k = matrix.get(P_k, 1, 1), float p12_k = matrix.get(P_k, 1, 2)
+float p20_k = matrix.get(P_k, 2, 0), float p21_k = matrix.get(P_k, 2, 1), float p22_k = matrix.get(P_k, 2, 2)
+
+float dynamic_decay = 0.9 * (1.0 - dyn_ER_smoothed * 0.5)
+float x_pred = k_x + k_v * dt + 0.5 * k_a * dt * dt
+float v_pred = k_v + k_a * dt
+float a_pred = k_a * dynamic_decay
+
+float residual_k = math_src - x_pred
+
+var float adapt_r = 1e-4
+var float adapt_q = 1e-6
+adapt_r := 0.95 * adapt_r + 0.05 * math.pow(residual_k, 2)
+adapt_q := 0.95 * adapt_q + 0.05 * math.pow(k_a * dt, 2)
+
+float q_noise = use_kalman_adapt ? math.max(adapt_q, 1e-8) * (1.0 + dyn_ER_smoothed) : math_var * 0.001
+float r_meas  = use_kalman_adapt ? math.max(adapt_r, 1e-8) : math_var * 0.1
+
+float p00_p = p00_k + p01_k + 0.5*p02_k + p10_k + p11_k + 0.5*p12_k + 0.5*(p20_k + p21_k + 0.5*p22_k) + q_noise
+float p01_p = p01_k + p02_k + p11_k + p12_k + 0.5*(p21_k + p22_k)
+float p02_p = p02_k + p12_k + 0.5*p22_k
+float p10_p = p10_k + p11_k + 0.5*p12_k + p20_k + p21_k + 0.5*p22_k
+float p11_p = p11_k + p12_k + p21_k + p22_k + q_noise
+float p12_p = p12_k + p22_k
+float p20_p = p20_k + p21_k + 0.5*p22_k
+float p21_p = p21_k + p22_k
+float p22_p = p22_k + q_noise
+
+float S_k = p00_p + r_meas
+
+float K0 = p00_p / S_k
+float K1 = p10_p / S_k
+float K2 = p20_p / S_k
+
+k_x := x_pred + K0 * residual_k
+k_v := v_pred + K1 * residual_k
+k_a := a_pred + K2 * residual_k
+
+float max_p = math_var * 50.0
+matrix.set(P_k, 0, 0, math.min((1 - K0) * p00_p, max_p)), matrix.set(P_k, 0, 1, math.min((1 - K0) * p01_p, max_p)), matrix.set(P_k, 0, 2, math.min((1 - K0) * p02_p, max_p))
+matrix.set(P_k, 1, 0, math.min(-K1 * p00_p + p10_p, max_p)), matrix.set(P_k, 1, 1, math.min(-K1 * p01_p + p11_p, max_p)), matrix.set(P_k, 1, 2, math.min(-K1 * p02_p + p12_p, max_p))
+matrix.set(P_k, 2, 0, math.min(-K2 * p00_p + p20_p, max_p)), matrix.set(P_k, 2, 1, math.min(-K2 * p01_p + p21_p, max_p)), matrix.set(P_k, 2, 2, math.min(-K2 * p02_p + p22_p, max_p))
+
+bool kalman_exh_bear = k_a < 0 and nz(k_a[1]) >= 0 and k_v > 0
+bool kalman_exh_bull = k_a > 0 and nz(k_a[1]) <= 0 and k_v < 0
+
+// =========================================================================
+// 8. HYBRID ENGINE: 3D EMISSION M-HMM & FRACDIFF 
+// =========================================================================
+f_log_sum_exp(float v0, float v1, float v2, float v3) =>
+    float max_v = math.max(v0, math.max(v1, math.max(v2, v3)))
+    max_v + math.log(math.max(1e-12, math.exp(v0 - max_v) + math.exp(v1 - max_v) + math.exp(v2 - max_v) + math.exp(v3 - max_v)))
+
+f_normalize_log_row(float p0, float p1, float p2, float p3) =>
+    float sum_p = p0 + p1 + p2 + p3
+    array<float> res = array.new<float>(4)
+    array.set(res, 0, math.log(math.max(p0/sum_p, 1e-12)))
+    array.set(res, 1, math.log(math.max(p1/sum_p, 1e-12)))
+    array.set(res, 2, math.log(math.max(p2/sum_p, 1e-12)))
+    array.set(res, 3, math.log(math.max(p3/sum_p, 1e-12)))
+    res
+
+f_log_gauss(float x, float mu, float sig) =>
+    float s = math.max(sig, 1e-6)
+    -0.5 * math.pow((x - mu) / s, 2)
+
+f_3d_log_kernel(float v, float a, float z, float mu_v, float mu_a, float mu_z, float sig) =>
+    f_log_gauss(v, mu_v, sig) + f_log_gauss(a, mu_a, sig) + f_log_gauss(z, mu_z, sig)
+
+var array<float> log_alpha = array.new<float>(4, math.log(0.25))
+
+if na(array.get(log_alpha, 0)) or array.get(log_alpha, 0) < -100.0
+    array.set(log_alpha, 0, math.log(0.25))
+    array.set(log_alpha, 1, math.log(0.25))
+    array.set(log_alpha, 2, math.log(0.25))
+    array.set(log_alpha, 3, math.log(0.25))
+
+// 1. FAST WEIGHTS FRACDIFF (Stationary Zero-Lag Features)
+float hmm_v_raw = use_frac ? f_fwfd_core(b1, frac_d, 10) : b1
+float hmm_a_raw = use_frac ? f_fwfd_core(b2 * h_dyn, frac_d, 10) : (b2 * h_dyn)
+float hmm_z_raw = use_frac ? f_fwfd_core(z_score, frac_d, 10) : z_score
+
+// Safe Z-Score Normalization (Protects against NaN Infection)
+float hmm_v = math.max(-3.0, math.min(3.0, nz(hmm_v_raw / math.max(ta.stdev(hmm_v_raw, bayes_len), 1e-6), 0.0)))
+float hmm_a = math.max(-3.0, math.min(3.0, nz(hmm_a_raw / math.max(ta.stdev(hmm_a_raw, bayes_len), 1e-6), 0.0)))
+float hmm_z = math.max(-3.0, math.min(3.0, nz(hmm_z_raw / math.max(ta.stdev(hmm_z_raw, bayes_len), 1e-6), 0.0)))
+
+float sig_3d = 1.0
+
+// 2. 3D PHASE-SPACE CENTROIDS (Velocity, Acceleration, Stretch)
+float log_B_bull  = f_3d_log_kernel(hmm_v, hmm_a, hmm_z,  1.0,  0.5,  0.5, sig_3d)
+float log_B_bear  = f_3d_log_kernel(hmm_v, hmm_a, hmm_z, -1.0, -0.5, -0.5, sig_3d)
+float log_B_chop  = f_3d_log_kernel(hmm_v, hmm_a, hmm_z,  0.0,  0.0,  0.0, sig_3d)
+float log_B_rev_u = f_3d_log_kernel(hmm_v, hmm_a, hmm_z, -0.5,  1.5, -1.5, sig_3d)
+float log_B_rev_d = f_3d_log_kernel(hmm_v, hmm_a, hmm_z,  0.5, -1.5,  1.5, sig_3d)
+float log_B_rev   = math.max(log_B_rev_u, log_B_rev_d)
+
+array<float> log_B = array.new<float>(4)
+array.set(log_B, 0, log_B_bull)
+array.set(log_B, 1, log_B_bear)
+array.set(log_B, 2, log_B_chop)
+array.set(log_B, 3, log_B_rev)
+
+// 3. CVD DIVERGENCE FORCING (Coupled Volume Proxy)
+float cvd_div_penalty = (math.sign(b1) != math.sign(cvd_velocity)) ? 0.3 : 0.0
+
+// 4. TRANSITION MATRIX
+float p_bull_bull = math.max(0.01, (b1 > 0 ? 0.9 : 0.05) - cvd_div_penalty)
+float p_bear_bear = math.max(0.01, (b1 < 0 ? 0.9 : 0.05) - cvd_div_penalty)
+float p_rev_jump  = math.max(0.05, math.min(0.95, cvd_div_penalty + (math.sign(b1) != math.sign(nz(b1[1])) ? 0.8 : 0.0)))
+float p_chop_chop = 0.1
+
+var matrix<float> log_A = matrix.new<float>(4, 4, math.log(0.25))
+
+array<float> row0 = f_normalize_log_row(p_bull_bull, 0.01, math.max(0.01, 1.0 - p_bull_bull - p_rev_jump - 0.01), p_rev_jump)
+array<float> row1 = f_normalize_log_row(0.01, p_bear_bear, math.max(0.01, 1.0 - p_bear_bear - p_rev_jump - 0.01), p_rev_jump)
+array<float> row2 = f_normalize_log_row((1.0 - p_chop_chop)/2.0, (1.0 - p_chop_chop)/2.0, p_chop_chop, 0.0)
+array<float> row3 = f_normalize_log_row(0.4, 0.4, 0.19, 0.01)
+
+for j = 0 to 3
+    matrix.set(log_A, 0, j, array.get(row0, j))
+    matrix.set(log_A, 1, j, array.get(row1, j))
+    matrix.set(log_A, 2, j, array.get(row2, j))
+    matrix.set(log_A, 3, j, array.get(row3, j))
+
+array<float> new_log_alpha = array.new<float>(4, 0.0)
+if use_hybrid
+    for j = 0 to 3
+        float t0 = nz(array.get(log_alpha, 0), math.log(0.25)) + nz(matrix.get(log_A, 0, j), math.log(0.25))
+        float t1 = nz(array.get(log_alpha, 1), math.log(0.25)) + nz(matrix.get(log_A, 1, j), math.log(0.25))
+        float t2 = nz(array.get(log_alpha, 2), math.log(0.25)) + nz(matrix.get(log_A, 2, j), math.log(0.25))
+        float t3 = nz(array.get(log_alpha, 3), math.log(0.25)) + nz(matrix.get(log_A, 3, j), math.log(0.25))
+        array.set(new_log_alpha, j, f_log_sum_exp(t0, t1, t2, t3) + (nz(array.get(log_B, j), 0.0) / hmm_temp))
+
+    float max_a = nz(array.max(new_log_alpha), 0.0)
+    float sum_exp_a = math.max(1e-12, math.exp(nz(array.get(new_log_alpha, 0), 0.0) - max_a) + math.exp(nz(array.get(new_log_alpha, 1), 0.0) - max_a) + math.exp(nz(array.get(new_log_alpha, 2), 0.0) - max_a) + math.exp(nz(array.get(new_log_alpha, 3), 0.0) - max_a))
+    float log_sum_a = max_a + math.log(sum_exp_a)
+    for j = 0 to 3
+        array.set(log_alpha, j, nz(array.get(new_log_alpha, j), 0.0) - log_sum_a)
+
+float hybrid_bull = nz(math.exp(array.get(log_alpha, 0)), 0.0) * 100.0, float hybrid_bear = nz(math.exp(array.get(log_alpha, 1)), 0.0) * 100.0
+float hybrid_range = nz(math.exp(array.get(log_alpha, 2)), 0.0) * 100.0, float hybrid_rev = nz(math.exp(array.get(log_alpha, 3)), 0.0) * 100.0
+
+float p1_h = hybrid_bull / 100.0, float p2_h = hybrid_bear / 100.0, float p3_h = hybrid_range / 100.0, float p4_h = hybrid_rev / 100.0
+float entropy = -(p1_h * math.log(math.max(p1_h, 1e-6)) + p2_h * math.log(math.max(p2_h, 1e-6)) + p3_h * math.log(math.max(p3_h, 1e-6)) + p4_h * math.log(math.max(p4_h, 1e-6))) / math.log(4.0)
+
+// ZERO-LAG REGIME DETERMINATION
+int fwd_idx = 0
+float max_fwd = nz(array.get(log_alpha, 0), -100.0)
+if nz(array.get(log_alpha, 1), -100.0) > max_fwd
+    max_fwd := array.get(log_alpha, 1)
+    fwd_idx := 1
+if nz(array.get(log_alpha, 2), -100.0) > max_fwd
+    max_fwd := array.get(log_alpha, 2)
+    fwd_idx := 2
+if nz(array.get(log_alpha, 3), -100.0) > max_fwd
+    max_fwd := array.get(log_alpha, 3)
+    fwd_idx := 3
+
+string hmm_regime = fwd_idx == 0 ? "BULL" : fwd_idx == 1 ? "BEAR" : fwd_idx == 2 ? "CHOP" : "REVERSAL"
+float max_prob = math.max(hybrid_bull, math.max(hybrid_bear, math.max(hybrid_range, hybrid_rev)))
+
+// =========================================================================
+// 9. ONLINE LOGISTIC REGRESSION (IRLS META-SCORE)
+// =========================================================================
+string regime = "CHOP"
+if use_hybrid
+    regime := hmm_regime 
+else
+    regime := b1 > 0 ? "BULL" : (b1 < 0 ? "BEAR" : "CHOP")
+
+float k_v_norm = k_v / math.max(domain_atr, 1e-6)
+float k_angle_rad = math.atan(k_v_norm) 
+float k_angle_norm = k_angle_rad / (math.pi / 2.0) 
+
+f_sigmoid(_x) => 1.0 / (1.0 + math.exp(-math.max(-10.0, math.min(10.0, _x))))
+
+// ABSOLUTE ZERO-LAG FEATURES
+// Полный отказ от WMA и FD. Переход на мгновенную стабильную активацию Tanh.
+float rls_b1 = b1 / math.max(domain_atr * 0.5, 1e-6)
+float rls_b2 = (b2 * h_dyn) / math.max(domain_atr * 0.5, 1e-6)
+float rls_z  = z_score / 2.0
+float rls_kv = use_kalman_feat ? k_angle_norm : kssa_jerk / math.max(domain_atr * 0.1, 1e-6)
+float rls_er = dyn_ER_smoothed * 2.0 - 1.0
+
+float n_b1 = f_tanh(rls_b1)
+float n_b2 = f_tanh(rls_b2)
+float n_z  = f_tanh(rls_z)
+float n_kv = f_tanh(rls_kv)
+float n_er = f_tanh(rls_er)
+
+// КИНЕМАТИЧЕСКИЙ ТАРГЕТИНГ + HOOKE'S LAW SPATIAL PENALTY
+// Штраф гарантирует, что алгоритм не будет выдавать сигнал BUY на самой вершине.
+float kin_momentum = b1 + b2 * h_dyn
+float elastic_penalty = z_score * (domain_atr * 0.25) 
+float kin_target_raw = kin_momentum - elastic_penalty
+
+float noise_floor = domain_atr * 0.05 * (1.0 + (1.0 - dyn_ER_smoothed))
+float kin_target_clean = math.sign(kin_target_raw) * math.max(0.0, math.abs(kin_target_raw) - noise_floor)
+float kin_target_norm = kin_target_clean / math.max(domain_atr * 0.5, 1e-6)
+
+float target_buy  = f_sigmoid(kin_target_norm * 3.0) 
+float target_sell = 1.0 - target_buy
+
+var matrix<float> P_buy = matrix.new<float>(6, 6, 0.0)
+var matrix<float> P_sell = matrix.new<float>(6, 6, 0.0)
+var matrix<float> W_buy = matrix.new<float>(6, 1, 0.0)
+var matrix<float> W_sell = matrix.new<float>(6, 1, 0.0)
+var matrix<float> X_prev = matrix.new<float>(6, 1, 0.0)
+var matrix<float> X_sell_prev = matrix.new<float>(6, 1, 0.0)
+
+var float last_pred_buy = 0.5
+var float last_pred_sell = 0.5
+
+var bool irls_init = false
+if not irls_init
+    for i = 0 to 5
+        matrix.set(P_buy, i, i, 10.0) 
+        matrix.set(P_sell, i, i, 10.0)
+    irls_init := true
+
+matrix<float> X_curr = matrix.new<float>(6, 1, 0.0)
+matrix.set(X_curr, 0, 0, 1.0) 
+matrix.set(X_curr, 1, 0, n_b1)
+matrix.set(X_curr, 2, 0, n_b2) 
+matrix.set(X_curr, 3, 0, -n_z) // Покупатель ищет отрицательный Z-Score
+matrix.set(X_curr, 4, 0, n_kv)
+matrix.set(X_curr, 5, 0, n_er)
+
+matrix<float> X_sell_curr = matrix.new<float>(6, 1, 0.0)
+matrix.set(X_sell_curr, 0, 0, 1.0) 
+matrix.set(X_sell_curr, 1, 0, -n_b1)
+matrix.set(X_sell_curr, 2, 0, -n_b2) 
+matrix.set(X_sell_curr, 3, 0, n_z) // Продавец ищет положительный Z-Score
+matrix.set(X_sell_curr, 4, 0, -n_kv)
+matrix.set(X_sell_curr, 5, 0, n_er) 
+
+float lr_ent_penalty = use_entropy ? math.exp(-2.0 * math.max(0.0, current_entropy - dyn_ent_thresh)) : 1.0
+float rls_vw = math.pow(math.max(vol_norm, 0.01), 0.33) * lr_ent_penalty
+
+if use_online_lr and bar_index > 100
+    // --- Покупки (BUY MODEL RLS UPDATE) ---
+    float p_buy = math.max(0.01, math.min(0.99, last_pred_buy))
+    float var_buy = p_buy * (1.0 - p_buy) * rls_vw 
+    float err_buy = target_buy - p_buy
+    
+    float dyn_lambda_buy = math.max(0.85, 1.0 - (lr_rate * math.abs(err_buy)))
+    float dyn_lr_buy = lr_rate * (1.0 + math.abs(err_buy)) * rls_vw
+    
+    matrix<float> K_buy = matrix.mult(P_buy, X_prev)
+    float xPx_buy = matrix.get(matrix.mult(matrix.transpose(X_prev), K_buy), 0, 0)
+    float S_buy = (dyn_lambda_buy / math.max(var_buy, 1e-6)) + xPx_buy
+    
+    matrix<float> K_KT_buy = matrix.mult(K_buy, matrix.transpose(K_buy))
+    
+    for i = 0 to 5
+        for j = 0 to 5
+            float p_val = (matrix.get(P_buy, i, j) - (matrix.get(K_KT_buy, i, j) / math.max(S_buy, 1e-6))) / dyn_lambda_buy
+            // ЖЕСТКАЯ ЗАЩИТА ОТ ВЫРОЖДЕНИЯ (NaN Paralyzation Fix)
+            if na(p_val)
+                p_val := (i == j) ? 10.0 : 0.0
+            p_val := math.min(math.max(p_val, -100.0), 100.0) 
+            matrix.set(P_buy, i, j, p_val)
+            
+    matrix<float> P_X_buy = matrix.mult(P_buy, X_prev)
+    for i = 0 to 5
+        float step_buy = matrix.get(P_X_buy, i, 0) * err_buy * dyn_lr_buy
+        if na(step_buy)
+            step_buy := 0.0
+        float clipped_step_buy = math.max(-1.0, math.min(1.0, step_buy))
+        matrix.set(W_buy, i, 0, matrix.get(W_buy, i, 0) + clipped_step_buy)
+
+    // --- Продажи (SELL MODEL RLS UPDATE) ---
+    float p_sell = math.max(0.01, math.min(0.99, last_pred_sell))
+    float var_sell = p_sell * (1.0 - p_sell) * rls_vw 
+    float err_sell = target_sell - p_sell
+    
+    float dyn_lambda_sell = math.max(0.85, 1.0 - (lr_rate * math.abs(err_sell)))
+    float dyn_lr_sell = lr_rate * (1.0 + math.abs(err_sell)) * rls_vw
+    
+    matrix<float> K_sell = matrix.mult(P_sell, X_sell_prev)
+    float xPx_sell = matrix.get(matrix.mult(matrix.transpose(X_sell_prev), K_sell), 0, 0)
+    float S_sell = (dyn_lambda_sell / math.max(var_sell, 1e-6)) + xPx_sell
+    
+    matrix<float> K_KT_sell = matrix.mult(K_sell, matrix.transpose(K_sell))
+    
+    for i = 0 to 5
+        for j = 0 to 5
+            float p_val = (matrix.get(P_sell, i, j) - (matrix.get(K_KT_sell, i, j) / math.max(S_sell, 1e-6))) / dyn_lambda_sell
+            // ЖЕСТКАЯ ЗАЩИТА ОТ ВЫРОЖДЕНИЯ (NaN Paralyzation Fix)
+            if na(p_val)
+                p_val := (i == j) ? 10.0 : 0.0
+            p_val := math.min(math.max(p_val, -100.0), 100.0) 
+            matrix.set(P_sell, i, j, p_val)
+            
+    matrix<float> P_X_sell = matrix.mult(P_sell, X_sell_prev)
+    for i = 0 to 5
+        float step_sell = matrix.get(P_X_sell, i, 0) * err_sell * dyn_lr_sell
+        if na(step_sell)
+            step_sell := 0.0
+        float clipped_step_sell = math.max(-1.0, math.min(1.0, step_sell))
+        matrix.set(W_sell, i, 0, matrix.get(W_sell, i, 0) + clipped_step_sell)
+
+X_prev := matrix.copy(X_curr)
+X_sell_prev := matrix.copy(X_sell_curr)
+
+float logit_buy = matrix.get(matrix.mult(matrix.transpose(W_buy), X_curr), 0, 0)
+float logit_sell = matrix.get(matrix.mult(matrix.transpose(W_sell), X_sell_curr), 0, 0)
+
+float buy_soft_score = f_sigmoid(logit_buy)
+float sell_soft_score = f_sigmoid(logit_sell)
+
+float ser_buy_score = buy_soft_score
+float ser_sell_score = sell_soft_score
+
+last_pred_buy := buy_soft_score
+last_pred_sell := sell_soft_score
+
+float meta_score = math.max(buy_soft_score, sell_soft_score)
+float f_ent_penalty = math.exp(-0.5 * math.pow(nz(entropy, 0.0), 2))
+float position_score = meta_score * f_ent_penalty
+
+// --- Финальные сигналы ---
+float vol_filter = nz(ta.atr(14) / ta.sma(ta.atr(14), 50), 1.0)
+bool pass_vol = use_vol_filter ? (vol_filter < 1.5) : true
+
+bool kv_buy_ok  = use_kalman_feat ? (k_angle_norm > 0) : true
+bool kv_sell_ok = use_kalman_feat ? (k_angle_norm < 0) : true
+
+bool soft_buy_signal = ser_buy_score > lr_sig_thresh and nz(ser_buy_score[1], 0) <= lr_sig_thresh and pass_vol and mtf_up_ok and z_guard_buy and kv_buy_ok and (b1 > -min_vel)
+bool soft_sell_signal = ser_sell_score > lr_sig_thresh and nz(ser_sell_score[1], 0) <= lr_sig_thresh and pass_vol and mtf_dn_ok and z_guard_sell and kv_sell_ok and (b1 < min_vel)
+
+bool kssa_event_buy = (kssa_early_up and b1 > -min_vel) or kssa_turn_up
+bool kssa_event_sell = (kssa_early_dn and b1 < min_vel) or kssa_turn_dn
+bool kssa_boost_active = math.sum(kssa_event_buy or kssa_event_sell ? 1.0 : 0.0, z_tol_window) > 0
+float current_kssa_boost = use_kssa_boost and kssa_boost_active ? kssa_boost_mult : 1.0
+
+float kssa_prob_buy = (kssa_early_up or kssa_turn_up) ? math.min(kssa_signal_strength / math.max(final_kssa_thresh, 1e-6), 1.0) : 0.0
+float kssa_prob_sell = (kssa_early_dn or kssa_turn_dn) ? math.min(kssa_signal_strength / math.max(final_kssa_thresh, 1e-6), 1.0) : 0.0
+
+// HMM Signalling
+float hmm_prob_buy = nz((hybrid_bull + (hmm_a > 0 ? hybrid_rev : 0.0)) / 100.0, 0.0)
+float hmm_prob_sell = nz((hybrid_bear + (hmm_a < 0 ? hybrid_rev : 0.0)) / 100.0, 0.0)
+
+bool hmm_buy_sig = use_hybrid and hmm_prob_buy > 0.5 and nz(hmm_prob_buy[1]) <= 0.5
+bool hmm_sell_sig = use_hybrid and hmm_prob_sell > 0.5 and nz(hmm_prob_sell[1]) <= 0.5
+
+float sync_kssa_buy = math.max(kssa_prob_buy, nz(kssa_prob_buy[1]))
+float sync_kssa_sell = math.max(kssa_prob_sell, nz(kssa_prob_sell[1]))
+float sync_fd_buy = math.max(fd_prob_buy, nz(fd_prob_buy[1]))
+float sync_fd_sell = math.max(fd_prob_sell, nz(fd_prob_sell[1]))
+
+float qsync_score_buy = (qsync_w_kssa * sync_kssa_buy) + (qsync_w_sgd * buy_soft_score) + (qsync_w_hmm * hmm_prob_buy) + (qsync_w_fd * sync_fd_buy) + (qsync_w_div * div_prob_buy)
+float qsync_score_sell = (qsync_w_kssa * sync_kssa_sell) + (qsync_w_sgd * sell_soft_score) + (qsync_w_hmm * hmm_prob_sell) + (qsync_w_fd * sync_fd_sell) + (qsync_w_div * div_prob_sell)
+
+float sum_w_qsync = qsync_w_kssa + qsync_w_sgd + qsync_w_hmm + qsync_w_fd + qsync_w_div
+float final_qsync_buy_prob = sum_w_qsync > 0 ? qsync_score_buy / sum_w_qsync : 0.0
+float final_qsync_sell_prob = sum_w_qsync > 0 ? qsync_score_sell / sum_w_qsync : 0.0
+
+int qsync_buy_count = (kssa_early_up ? 1 : 0) + (soft_buy_signal ? 1 : 0) + (hmm_buy_sig ? 1 : 0) + (fd_turn_up ? 1 : 0) + (div_sig_buy ? 1 : 0)
+int qsync_sell_count = (kssa_early_dn ? 1 : 0) + (soft_sell_signal ? 1 : 0) + (hmm_sell_sig ? 1 : 0) + (fd_turn_dn ? 1 : 0) + (div_sig_sell ? 1 : 0)
+
+bool qsync_buy = use_soft_qsync ? (final_qsync_buy_prob > qsync_thresh and nz(final_qsync_buy_prob[1]) <= qsync_thresh) : (qsync_buy_count >= 2)
+bool qsync_sell = use_soft_qsync ? (final_qsync_sell_prob > qsync_thresh and nz(final_qsync_sell_prob[1]) <= qsync_thresh) : (qsync_sell_count >= 2)
+
+// =========================================================================
+// 9.5 DYNAMIC KELLY CRITERION (BRIER SKILL SCORE EVALUATION t-1)
+// =========================================================================
+float prev_q_buy = nz(final_qsync_buy_prob[1], 0.0)
+float prev_q_sell = nz(final_qsync_sell_prob[1], 0.0)
+float actual_up = math_src > nz(math_src[1], math_src) ? 1.0 : 0.0
+float actual_dn = math_src < nz(math_src[1], math_src) ? 1.0 : 0.0
+
+float brier_buy = math.pow(prev_q_buy - actual_up, 2)
+float brier_sell = math.pow(prev_q_sell - actual_dn, 2)
+float avg_brier = (brier_buy + brier_sell) / 2.0
+
+float smooth_brier = nz(ta.sma(avg_brier, kelly_len), 0.25)
+float bss = 1.0 - (smooth_brier / 0.25) 
+
+float kelly_mult = 1.0
+if use_kelly
+    float k_raw = math.max(0.01, bss) 
+    float variance_penalty = regime == "CHOP" ? 0.5 : 1.0
+    kelly_mult := math.min(2.0, k_raw * variance_penalty * 2.0) 
+
+float entry_size_final = position_score * risk_factor * current_kssa_boost * kelly_mult
+
+// =========================================================================
+// 10. ОТРИСОВКА И ДАШБОРД
+// =========================================================================
+plot(show_ma_fast ? fast_ma_val : na, "Fast MA", col_ma_fast)
+plot(show_ma_med  ? med_ma_val  : na, "Slow MA", col_ma_med)
+plot(show_ma_slow ? slow_ma_val : na, "Slow MA", col_ma_slow, 2)
+
+color base_col = b1 > 0 ? up_col : dn_col
+float adaptive_norm = math.abs(t_stat) < 2.0 ? norm_s * 0.5 : norm_s 
+color final_col = color.from_gradient(adaptive_norm, 0.0, 1.0, color.new(base_col, basecol_transparency), color.new(base_col, 0))
+plot(show_line ? tvc : na, "TVC Core", final_col, line_w)
+
+color base_col2 = b1_2 > 0 ? up_col2 : dn_col2
+color final_col2 = color.new(base_col2, basecol_transparency2)
+plot(show_tvc2 ? tvc2 : na, "TVC Core 2 (Slow)", final_col2, line_w2)
+
+float plot_kx = reg_mode == "Logarithmic" ? math.exp(k_x) : k_x
+plot(show_kalman ? plot_kx : na, "Kalman Filter", color.new(color.orange, 0), 2)
+
+float max_dev = reg_mode == "Logarithmic" ? (atr_val * 4.0) / math.max(tvc, 1e-6) : atr_val * 4.0
+float regime_band_mult = regime == "CHOP" or entropy > 0.85 ? 1.5 : 1.0
+float final_dev = math.min(dev * band_mult_user * regime_band_mult, max_dev)
+
+float band_upper = na, float band_lower = na
+if reg_mode == "Logarithmic"
+    if not na(tvc) and not na(final_dev)
+        band_upper := tvc * math.exp(final_dev)
+        band_lower := tvc * math.exp(-final_dev)
+else
+    if not na(tvc) and not na(final_dev)
+        band_upper := tvc + final_dev
+        band_lower := tvc - final_dev
+
+p_up = plot(show_bands ? band_upper : na, "Upper Band", color.new(final_col, band_transparency))
+p_dn = plot(show_bands ? band_lower : na, "Lower Band", color.new(final_col, band_transparency))
+fill(p_up, p_dn, color.new(final_col, band_transparency))
+
+plotshape(use_frac and fd_turn_up and show_fd_sig, "FracDiff Up", shape.labelup, location.belowbar, color.new(color.teal, 0), size=size.tiny, text="FD", textcolor=color.white)
+plotshape(use_frac and fd_turn_dn and show_fd_sig, "FracDiff Down", shape.labeldown, location.abovebar, color.new(color.maroon, 0), size=size.tiny, text="FD", textcolor=color.white)
+
+float plot_kssa = reg_mode == "Logarithmic" ? math.exp(kssa_final) : kssa_final
+color kssa_line_col = kssa_slope > 0 ? kssa_col_bull : kssa_col_bear
+plot(use_kssa and show_kssa_line ? plot_kssa : na, "KSSA Line (Zero-Lag)", kssa_line_col, 2)
+
+plotshape(use_kssa and kssa_turn_up and show_kssa_sig, "KSSA Reversal Up", shape.diamond, location.belowbar, kssa_col_bull, size=size.small, text="K", textcolor=color.white)
+plotshape(use_kssa and kssa_turn_dn and show_kssa_sig, "KSSA Reversal Down", shape.diamond, location.abovebar, kssa_col_bear, size=size.small, text="K", textcolor=color.white)
+plotshape(use_kssa and kssa_confirmed_buy and show_kssa_sig, "KSSA Confirmed Buy", shape.triangleup, location.belowbar, color.new(color.aqua, 0), size=size.normal, text="INST", textcolor=color.white)
+plotshape(use_kssa and kssa_confirmed_sell and show_kssa_sig, "KSSA Confirmed Sell", shape.triangledown, location.abovebar, color.new(color.orange, 0), size=size.normal, text="INST", textcolor=color.white)
+
+plotshape(show_kalman_exhaustion and kalman_exh_bear, "Kalman Exh Bear", shape.xcross, location.abovebar, color.new(color.purple, 0), size=size.tiny)
+plotshape(show_kalman_exhaustion and kalman_exh_bull, "Kalman Exh Bull", shape.xcross, location.belowbar, color.new(color.purple, 0), size=size.tiny)
+
+plotshape(show_zscore and z_sig_buy, "Z-Score Buy", shape.triangleup, location.belowbar, color.new(color.blue, 0), size=size.small, text="Z", textcolor=color.white)
+plotshape(show_zscore and z_sig_sell, "Z-Score Sell", shape.triangledown, location.abovebar, color.new(color.fuchsia, 0), size=size.small, text="Z", textcolor=color.white)
+
+plotshape(show_soft_sigs and soft_buy_signal and show_sgd_sig, "B", shape.labelup, location.belowbar, color.new(#00e677, 44), size=size.small, text="r", textcolor=color.white)
+plotshape(show_soft_sigs and soft_sell_signal and show_sgd_sig, "S", shape.labeldown, location.abovebar, color.new(#ff5252, 36), size=size.small,  text="r", textcolor=color.white)
+
+plotshape(hmm_buy_sig and show_hmm_sig, "HMM Buy", shape.square, location.belowbar, hmm_col_buy, text="M", textcolor=color.white, size=size.tiny)
+plotshape(hmm_sell_sig and show_hmm_sig, "HMM Sell", shape.square, location.abovebar, hmm_col_sell, text="M", textcolor=color.white, size=size.tiny)
+
+plotshape(div_sig_buy and show_div_sig, "Div Buy", shape.triangleup, location.belowbar, color.new(color.fuchsia, 0), text="i-div", textcolor=color.white, size=size.tiny)
+plotshape(div_sig_sell and show_div_sig, "Div Sell", shape.triangledown, location.abovebar, color.new(color.fuchsia, 0), text="i-div", textcolor=color.white, size=size.tiny)
+
+plotshape(show_turning and turn_up, "Turn Up", shape.circle, location.belowbar, color.lime, size=size.tiny)
+plotshape(show_turning and turn_dn, "Turn Down", shape.circle, location.abovebar, color.red, size=size.tiny)
+plotshape(show_divergence and div_bull, "Div Bull", shape.labelup, location.belowbar, color.new(color.fuchsia, 0), text="div", textcolor=color.white, size=size.tiny)
+plotshape(show_divergence and div_bear, "Div Bear", shape.labeldown, location.abovebar, color.new(color.fuchsia, 0), text="div", textcolor=color.white, size=size.tiny)
+plotshape(show_curv_flip and curvature_flip_up, "Curvature Up", shape.xcross, location.belowbar, color.yellow, size=size.tiny)
+plotshape(show_curv_flip and curvature_flip_dn, "Curvature Dn", shape.xcross, location.abovebar, color.yellow, size=size.tiny)
+
+plotshape(show_accel and accel_up, "Accel Up", shape.triangleup, location.belowbar, color.new(color.yellow, 0), size=size.tiny, text="A", textcolor=color.white)
+plotshape(show_accel and accel_dn, "Accel Down", shape.triangledown, location.abovebar, color.new(color.yellow, 0), size=size.tiny, text="A", textcolor=color.white)
+
+plotshape(show_qsync and qsync_buy, "Q-SYNC Buy", shape.arrowup, location.belowbar, qsync_col_buy, size=size.normal, text="soft", textcolor=color.white)
+plotshape(show_qsync and qsync_sell, "Q-SYNC Sell", shape.arrowdown, location.abovebar, qsync_col_sell, size=size.normal, text="soft", textcolor=color.white)
+
+int table_rows = use_hybrid ? 28 : 20
+var table stats = table.new(position.bottom_right, 2, table_rows, color.black, color.gray, 1, color.gray, 1)
+
+if barstate.islast and show_dash
+    int row_idx = 0
+    table.cell(stats, 0, row_idx, "Adj. R²", text_color = color.white)
+    table.cell(stats, 1, row_idx, str.tostring(r2, "#.##"), text_color = r2 > 0.6 ? color.lime : color.white)
+    row_idx += 1
+    
+    table.cell(stats, 0, row_idx, "t-stat", text_color = color.white)
+    table.cell(stats, 1, row_idx, str.tostring(t_stat, "#.##"), text_color = math.abs(t_stat) > 2.0 ? color.lime : color.orange)
+    row_idx += 1
+    
+    table.cell(stats, 0, row_idx, "RLS Meta Score", text_color = color.white)
+    table.cell(stats, 1, row_idx, str.tostring(meta_score, "#.##"), text_color = meta_score > lr_sig_thresh ? color.lime : color.orange)
+    row_idx += 1
+    
+    table.cell(stats, 0, row_idx, "Entry Size", text_color = color.white)
+    table.cell(stats, 1, row_idx, str.tostring(entry_size_final, "0.000") + "x", text_color = color.aqua)
+    row_idx += 1
+    
+    if use_kelly
+        table.cell(stats, 0, row_idx, "Kelly (BSS) Edge", text_color = color.white)
+        table.cell(stats, 1, row_idx, str.tostring(bss, "#.##"), text_color = bss > 0 ? color.lime : color.red)
+        row_idx += 1
+
+    if use_hybrid
+        string display_regime = regime == "REVERSAL" ? "REVERSAL" : regime
+        color reg_color = display_regime == "BULL" ? color.lime : (display_regime == "BEAR" ? color.red : (display_regime == "REVERSAL" ? color.fuchsia : color.gray))
+        table.cell(stats, 0, row_idx, "REGIME", text_color = color.white)
+        table.cell(stats, 1, row_idx, display_regime, text_color = reg_color)
+        row_idx += 1
+        
+    table.cell(stats, 0, row_idx, "Slope %", text_color = color.white)
+    table.cell(stats, 1, row_idx, str.tostring(slope_pct, "#.###") + "%", text_color = slope_pct > 0 ? color.lime : color.red)
+    row_idx += 1
+    
+    if use_mtf
+        table.cell(stats, 0, row_idx, "HTF Trend", text_color = color.white)
+        table.cell(stats, 1, row_idx, htf_b1_2 > 0 ? "BULL" : "BEAR", text_color = htf_b1_2 > 0 ? color.lime : color.red)
+        row_idx += 1
+
+    if use_entropy
+        table.cell(stats, 0, row_idx, "Info Divergence", text_color = color.white)
+        table.cell(stats, 1, row_idx, str.tostring(current_entropy, "#.##"), text_color = current_entropy > dyn_ent_thresh ? color.red : color.lime)
+        row_idx += 1
+
+    table.cell(stats, 0, row_idx, "Z-Score", text_color = color.white)
+    table.cell(stats, 1, row_idx, str.tostring(z_score, "#.##"), text_color = math.abs(z_score) > 1.5 ? color.orange : color.white)
+    row_idx += 1
+
+    if use_frac
+        table.cell(stats, 0, row_idx, "FD Z-Score", text_color = color.white)
+        table.cell(stats, 1, row_idx, str.tostring(fd_z, "#.##"), text_color = math.abs(fd_z) > frac_z_thresh ? color.orange : color.white)
+        row_idx += 1
+
+    if use_hilbert
+        table.cell(stats, 0, row_idx, "Hilbert Phase", text_color = color.white)
+        string phase_txt = str.tostring(hilbert_phase, "#.#") + "°"
+        color phase_col = phase_bull ? color.lime : (phase_bear ? color.red : color.gray)
+        table.cell(stats, 1, row_idx, phase_txt, text_color = phase_col)
+        row_idx += 1
+
+    if show_qsync
+        table.cell(stats, 0, row_idx, "Q-SYNC Status", text_color = color.white)
+        string q_txt = "WAIT"
+        color q_col = color.gray
+        if use_soft_qsync
+            q_txt := qsync_buy ? "STRONG BUY" : (qsync_sell ? "STRONG SELL" : "WAIT")
+            q_col := qsync_buy ? color.lime : (qsync_sell ? color.red : color.gray)
+        else
+            q_txt := qsync_buy ? "BUY" : (qsync_sell ? "SELL" : "WAIT")
+            q_col := qsync_buy ? color.lime : (qsync_sell ? color.red : color.gray)
+        table.cell(stats, 1, row_idx, q_txt, text_color = q_col)
+        row_idx += 1
+        
+        if use_soft_qsync
+            table.cell(stats, 0, row_idx, "Q-SYNC Score", text_color = color.white)
+            float max_qscore = math.max(final_qsync_buy_prob, final_qsync_sell_prob)
+            table.cell(stats, 1, row_idx, str.tostring(max_qscore * 100, "#.##") + "%", text_color = max_qscore > qsync_thresh ? color.aqua : color.white)
+            row_idx += 1
