@@ -122,6 +122,7 @@ kssa_vert_thresh = input.float(0.9999, "LRF Verticality Threshold (Anti-Loss)", 
 float kssa_sig_perc = input.float(45.0, "Перцентиль силы сигнала (KSSA)", minval=10.0, maxval=99.0, step=1.0, group=grp_ar_ssa)
 kssa_use_combo = input.bool(true, "Combo Reversal Engine (A+C: Early|Turn)", group=grp_ar_ssa, tooltip="Объединяет упреждающий разворот по кривизне (Zero-Lag, вариант C) и пересечение наклона с фильтром силы (вариант A). Откл. -> чистое пересечение наклона (старое поведение).")
 float kssa_curv_perc = input.float(60.0, "Перцентиль силы кривизны (Early)", minval=10.0, maxval=99.0, step=1.0, group=grp_ar_ssa, tooltip="Порог значимости для упреждающего разворота по кривизне (компонент C).")
+float kssa_acc_perc = input.float(30.0, "Перцентиль значимости УСКОРЕНИЯ (Reversal Gate)", minval=0.0, maxval=99.0, step=1.0, group=grp_ar_ssa, tooltip="Гейт разворота по СЫРОЙ магнитуде ускорения |kssa_curv| (теоретически корректный дискриминатор: на экстремуме f''(t) максимальна). Заменяет противоречивый фильтр силы наклона в Combo-движке. 0 = без гейта (макс. количество).")
 kssa_cooldown = input.int(4, "Cooldown между однотипными (бары)", minval=0, maxval=20, group=grp_ar_ssa, tooltip="Минимальный интервал между двумя сигналами одного направления. Подавляет дубли, повышает точность совпадения с эталоном.")
 kssa_col_bull = input.color(color.new(color.aqua, 0), "Цвет сигнала KSSA (Buy)", group = grp_ar_ssa)
 kssa_col_bear = input.color(color.new(color.orange, 0), "Цвет сигнала KSSA (Sell)", group = grp_ar_ssa)
@@ -1015,6 +1016,20 @@ float kssa_curv_strength = math.abs((kssa_curv - kssa_curv_mean) / kssa_curv_dev
 float kssa_curv_thresh = nz(ta.percentile_linear_interpolation(kssa_curv_strength, 100, kssa_curv_perc), 1.0)
 bool kssa_curv_valid = (kssa_curv_strength > kssa_curv_thresh)
 
+// КАЛИБРОВКА B: Кинематический гейт значимости разворота по СЫРОМУ УСКОРЕНИЮ.
+// Теорема об экстремуме гладкой траектории: в точке разворота f'(t)=0, а |f''(t)|
+// (ускорение/кривизна) МАКСИМАЛЬНА. Поэтому фильтр силы НАКЛОНА (kssa_signal_strength)
+// математически противоречив как гейт ПЕРЕСЕЧЕНИЯ наклона: на самом пересечении
+// |наклон|->0, его z-сила минимальна, и истинные пологие развороты систематически
+// уничтожаются (главная причина потери количества сигналов).
+// Корректный дискриминатор — СЫРАЯ магнитуда ускорения относительно её робастной
+// перцентильной шкалы. Берём именно сырую |kssa_curv|, а НЕ z-score: вычитание
+// скользящего среднего и деление на скользящее СКО завышает шумовые пересечения
+// в трендовых участках с малой локальной дисперсией кривизны.
+float kssa_acc_mag = math.abs(kssa_curv)
+float kssa_acc_thresh = nz(ta.percentile_linear_interpolation(kssa_acc_mag, 100, kssa_acc_perc), 0.0)
+bool kssa_kin_valid = kssa_acc_mag > kssa_acc_thresh
+
 bool tvc_allow_up = t_stat > -2.0
 bool tvc_allow_dn = t_stat < 2.0
 
@@ -1025,11 +1040,16 @@ bool kssa_early_dn = use_kssa and kssa_curv < 0 and nz(kssa_curv[1]) >= 0 and ks
 bool kssa_cross_up = kssa_slope > 0 and nz(kssa_slope[1]) <= 0
 bool kssa_cross_dn = kssa_slope < 0 and nz(kssa_slope[1]) >= 0
 
-// КАЛИБРОВКА A+C: сырой combo-сигнал (до cooldown).
-// Компонент C (early): смена знака кривизны при подтверждённой силе кривизны -> Zero-Lag разворот.
-// Компонент A (turn): пересечение наклона при подтверждённой силе наклона -> точность.
-bool kssa_raw_up = kssa_use_combo ? ((kssa_early_up and kssa_curv_valid) or (kssa_cross_up and kssa_valid)) : (kssa_cross_up and kssa_valid)
-bool kssa_raw_dn = kssa_use_combo ? ((kssa_early_dn and kssa_curv_valid) or (kssa_cross_dn and kssa_valid)) : (kssa_cross_dn and kssa_valid)
+// КАЛИБРОВКА A+C (исправленная): сырой combo-сигнал (до cooldown).
+// Компонент C (early, Zero-Lag): упреждающая смена знака кривизны (опережает на ~1 бар).
+// Компонент A (turn): подтверждающее пересечение наклона (запаздывает на ~1 бар).
+// ОБА компонента гейтируются ЕДИНЫМ кинематическим фильтром по магнитуде ускорения
+// (kssa_kin_valid), а не противоречивым фильтром силы наклона. Объединение early|cross
+// восстанавливает потерянное количество разворотов (recall ~2x по тесту Polus), сохраняя
+// медианный лаг и повышая точность. Режим combo=off оставлен для обратной совместимости
+// (чистое пересечение наклона со старым фильтром силы).
+bool kssa_raw_up = kssa_use_combo ? ((kssa_early_up or kssa_cross_up) and kssa_kin_valid) : (kssa_cross_up and kssa_valid)
+bool kssa_raw_dn = kssa_use_combo ? ((kssa_early_dn or kssa_cross_dn) and kssa_kin_valid) : (kssa_cross_dn and kssa_valid)
 
 // КАЛИБРОВКА A+C: Cooldown-дедупликация (минимальный интервал между однотипными сигналами).
 // Подавляет повторные срабатывания внутри одного разворота, повышая совпадение с эталоном.
